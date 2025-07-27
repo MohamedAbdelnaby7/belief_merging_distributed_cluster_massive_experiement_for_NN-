@@ -4,6 +4,7 @@ Complete Standalone Distributed Belief Merging Experiment
 Modified to support multiple grid sizes and agent numbers
 Includes all original classes + distributed execution framework
 No external dependencies on your original file
+FIXED: Consistent seed generation for proper checkpointing
 """
 
 import numpy as np
@@ -43,7 +44,32 @@ warnings.filterwarnings('ignore')
 
 
 # ===================================================================
-# ORIGINAL BELIEF MERGING CLASSES (from your original file)
+# SEED FIX: Consistent seed generation for proper checkpointing
+# ===================================================================
+
+def generate_consistent_seed(grid_size, n_agents, pattern, trial_id):
+    """
+    Generate a consistent seed that will be the same across Python sessions
+    Replaces the problematic hash() function with hashlib for consistency
+    
+    Args:
+        grid_size: (rows, cols) tuple
+        n_agents: number of agents
+        pattern: movement pattern string
+        trial_id: trial identifier
+    
+    Returns:
+        Consistent integer seed
+    """
+    seed_string = f"{grid_size[0]}x{grid_size[1]}_{n_agents}agents_{pattern}_trial{trial_id}"
+    hash_object = hashlib.sha256(seed_string.encode())
+    hash_hex = hash_object.hexdigest()
+    seed = int(hash_hex[:8], 16) % (2**31 - 1)  # Keep it within int32 range
+    return seed
+
+
+# ===================================================================
+# ORIGINAL BELIEF MERGING CLASSES
 # ===================================================================
 
 class UnifiedBeliefMergingFramework:
@@ -809,12 +835,8 @@ class DistributedExperimentManager:
             for n_agents in self.config.n_agents_list:
                 for pattern in self.config.target_patterns:
                     for trial_id in range(self.config.n_trials):
-                        # Create unique seed for each grid/agent/pattern/trial combination
-                        trial_seed = (trial_id * 1000 + 
-                                     hash(pattern) % 1000 + 
-                                     grid_size[0] * 100 + 
-                                     grid_size[1] * 10 + 
-                                     n_agents)
+                        # FIXED: Use consistent seed generation instead of hash()
+                        trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                         
                         for merge_interval in self.config.merge_intervals:
                             task = TrialTask(
@@ -978,12 +1000,8 @@ class DistributedExperimentManager:
                         interval_results = []
                         
                         for trial_id in range(self.config.n_trials):
-                            # Recreate unique seed
-                            trial_seed = (trial_id * 1000 + 
-                                         hash(pattern) % 1000 + 
-                                         grid_size[0] * 100 + 
-                                         grid_size[1] * 10 + 
-                                         n_agents)
+                            # FIXED: Use consistent seed generation
+                            trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                             
                             task = TrialTask(
                                 grid_size=grid_size,
