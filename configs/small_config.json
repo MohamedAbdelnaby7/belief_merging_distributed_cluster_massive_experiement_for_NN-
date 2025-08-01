@@ -1,0 +1,33 @@
+{
+  "alpha": 0.1,
+  "beta": 0.2,
+  "grid_sizes": [
+    [
+      10,
+      10
+    ],
+    [
+      20,
+      20
+    ]
+  ],
+  "n_agents_list": [
+    2,
+    3,
+    4
+  ],
+  "n_trials": 20,
+  "horizon": 2,
+  "max_steps": 500,
+  "merge_intervals": [
+    0,
+    25,
+    100,
+    Infinity
+  ],
+  "target_patterns": [
+    "random",
+    "evasive"
+  ],
+  "fast_mode": false
+}

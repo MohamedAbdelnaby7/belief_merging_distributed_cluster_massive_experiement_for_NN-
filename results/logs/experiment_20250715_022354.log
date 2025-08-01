@@ -1,0 +1,5 @@
+2025-07-15 02:23:54,162 - INFO - Experiment started on compute-2-08
+2025-07-15 02:23:54,162 - INFO - Using 51 workers
+2025-07-15 02:23:54,162 - INFO - Config: ExperimentConfig(grid_sizes=[(10, 10), (20, 20)], n_agents_list=[2, 3], alpha=0.1, beta=0.2, horizon=2, n_trials=5, max_steps=200, merge_intervals=[0, 50, inf], target_patterns=['random'], fast_mode=False)
+2025-07-15 02:23:54,162 - INFO - Collecting results from checkpoints...
+2025-07-15 02:23:54,172 - INFO - Consolidated results saved to results/consolidated_results_20250715_022354.pkl
