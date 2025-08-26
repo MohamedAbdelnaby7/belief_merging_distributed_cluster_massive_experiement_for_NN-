@@ -1144,21 +1144,29 @@ class AdvancedClusterAnalyzer:
         print(f"Executive summary generated: {summary_path}")
     
     def _make_json_serializable(self, obj):
-        """Convert numpy types to JSON serializable types"""
+        """Convert numpy types and other non-serializable objects to JSON serializable types"""
         if isinstance(obj, dict):
             return {k: self._make_json_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):
             return [self._make_json_serializable(v) for v in obj]
+        elif isinstance(obj, tuple):
+            return [self._make_json_serializable(v) for v in obj]
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif isinstance(obj, (np.int64, np.int32)):
+        elif isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
             return int(obj)
-        elif isinstance(obj, (np.float64, np.float32)):
+        elif isinstance(obj, (np.float64, np.float32, np.float16)):
             return float(obj)
+        elif isinstance(obj, (np.bool_, bool)):  # FIXED: Handle both numpy and python booleans
+            return bool(obj)
         elif obj == float('inf'):
             return "inf"
+        elif obj == float('-inf'):
+            return "-inf"
         elif pd.isna(obj):
             return None
+        elif hasattr(obj, 'item'):  # Handle numpy scalars
+            return obj.item()
         else:
             return obj
     

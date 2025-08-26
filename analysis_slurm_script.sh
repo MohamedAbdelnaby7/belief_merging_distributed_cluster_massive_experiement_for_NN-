@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -N 1
 #SBATCH -n 8
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH -J "BeliefAnalysis"
 #SBATCH -p short
 #SBATCH -t 4:00:00
@@ -19,7 +19,7 @@ echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "CPUs: $SLURM_NTASKS"
-echo "Memory: 32GB"
+echo "Memory: 128Gb"
 echo "Time Limit: 4 hours"
 echo "Analysis Target: Massive distributed experiment dataset"
 echo "=========================================="
@@ -69,7 +69,7 @@ echo "Checking required files..."
 
 REQUIRED_FILES=(
     "advanced_cluster_analyzer.py"
-    "results/consolidated_results_*.pkl"
+    "results/consolidated_results_20250729_072821.pkl"
 )
 
 missing_files=0
