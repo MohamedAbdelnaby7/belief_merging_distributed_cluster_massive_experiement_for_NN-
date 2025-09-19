@@ -3,6 +3,7 @@
 Advanced Cluster-Scale Experiment Analyzer
 Designed for massive datasets from distributed Turing cluster experiments
 Provides deep insights into belief merging performance across configurations
+MODIFIED: Focus on communication efficiency and discovery speed metrics
 """
 
 import pickle
@@ -114,15 +115,21 @@ class AdvancedClusterAnalyzer:
                                 'prob_at_target': trial['prob_at_true_target'],
                                 'computation_time': trial['elapsed_time'],
                                 
-                                # Derived metrics
+                                # MODIFIED: Enhanced communication metrics
                                 'discovery_rate': 1.0 if trial['target_found'] else 0.0,
-                                'search_efficiency': trial['discovery_count'] / trial['elapsed_time'] if trial['elapsed_time'] > 0 else 0,
+                                'steps_to_discovery': trial['first_discovery_step'] if trial['target_found'] else 1000,
+                                'communication_efficiency': 1.0 / merge_interval if merge_interval != float('inf') and merge_interval > 0 else (1.0 if merge_interval == 0 else 0.0),
                                 'info_gain': np.log(grid_size) - trial['final_entropy'],  # Information gained
                                 'performance_score': (1.0 if trial['target_found'] else 0.0) / (1 + trial['prediction_error']),
                                 
                                 # Communication metrics
                                 'total_merges': trial.get('total_merges', 0),
                                 'merge_frequency': trial.get('total_merges', 0) / trial.get('max_steps', 1000) if trial.get('max_steps', 1000) > 0 else 0,
+                                
+                                # ADDED: Steps-based efficiency metrics
+                                'discovery_efficiency': (1.0 if trial['target_found'] else 0.0) / max(1, trial['first_discovery_step'] if trial['target_found'] else 1000),
+                                'communication_overhead': merge_interval if merge_interval != float('inf') else 1000,
+                                'steps_per_merge': merge_interval if merge_interval != float('inf') and merge_interval > 0 else (0 if merge_interval == 0 else 1000),
                             }
                             
                             # Add convergence metrics if available
@@ -144,7 +151,7 @@ class AdvancedClusterAnalyzer:
                                                 break
                                         row['convergence_speed'] = convergence_step
                                     else:
-                                        row['convergence_speed'] = len(entropy_hist)
+                                        row['convergence_speed'] = 1000
                                 else:
                                     row['initial_entropy'] = np.log(grid_size)
                                     row['entropy_reduction'] = 0
@@ -173,7 +180,8 @@ class AdvancedClusterAnalyzer:
         print("  - Multi-way ANOVA tests...")
         from scipy.stats import f_oneway
         
-        metrics = ['final_entropy', 'prediction_error', 'discovery_step', 'performance_score']
+        # MODIFIED: Focus on step-based and communication metrics
+        metrics = ['steps_to_discovery', 'discovery_efficiency', 'communication_efficiency', 'final_entropy']
         factors = ['pattern', 'strategy', 'grid_key', 'n_agents']
         
         anova_results = {}
@@ -203,7 +211,8 @@ class AdvancedClusterAnalyzer:
         strategies = df['strategy'].unique()
         strategy_comparisons = {}
         
-        for metric in ['final_entropy', 'prediction_error', 'discovery_rate']:
+        # MODIFIED: Focus on steps and communication metrics
+        for metric in ['steps_to_discovery', 'discovery_efficiency', 'discovery_rate']:
             metric_comparisons = {}
             
             for strategy1, strategy2 in itertools.combinations(strategies, 2):
@@ -242,12 +251,14 @@ class AdvancedClusterAnalyzer:
         
         # 3. Correlation analysis
         print("  - Correlation analysis...")
-        numeric_cols = ['grid_size', 'n_agents', 'merge_interval', 'final_entropy', 
-                       'prediction_error', 'discovery_step', 'computation_time', 'performance_score']
+        # MODIFIED: Include step-based metrics
+        numeric_cols = ['grid_size', 'n_agents', 'steps_per_merge', 'steps_to_discovery', 
+                       'discovery_efficiency', 'communication_efficiency', 'final_entropy', 
+                       'prediction_error', 'computation_time', 'performance_score']
         
         # Replace inf with large number for correlation
         df_corr = df.copy()
-        df_corr['merge_interval'] = df_corr['merge_interval'].replace(float('inf'), 1000)
+        df_corr['steps_per_merge'] = df_corr['steps_per_merge'].replace(float('inf'), 1000)
         
         correlation_matrix = df_corr[numeric_cols].corr(method='spearman')
         stats_results['correlations'] = correlation_matrix.to_dict()
@@ -288,50 +299,47 @@ class AdvancedClusterAnalyzer:
         fig = plt.figure(figsize=(20, 16))
         gs = fig.add_gridspec(4, 4, hspace=0.3, wspace=0.3)
         
-        # Main performance surface plot
-        ax = fig.add_subplot(gs[0:2, 0:2], projection='3d')
+        # MODIFIED: Main plot - Steps to Discovery vs Communication Interval
+        ax = fig.add_subplot(gs[0:2, 0:2])
         
-        # Aggregate data for 3D plot
-        agg_data = df.groupby(['merge_interval', 'grid_size']).agg({
-            'performance_score': 'mean',
-            'final_entropy': 'mean',
-            'discovery_rate': 'mean'
+        # Aggregate data for main plot
+        agg_data = df.groupby(['communication_overhead', 'grid_size']).agg({
+            'steps_to_discovery': 'mean',
+            'discovery_rate': 'mean',
+            'discovery_efficiency': 'mean'
         }).reset_index()
         
-        # Replace inf with 1000 for plotting
-        agg_data['merge_interval'] = agg_data['merge_interval'].replace(float('inf'), 1000)
+        # Create scatter plot with size representing discovery rate
+        scatter = ax.scatter(agg_data['communication_overhead'], agg_data['steps_to_discovery'], 
+                           c=agg_data['discovery_efficiency'], s=agg_data['discovery_rate']*200 + 50,
+                           cmap='viridis', alpha=0.7)
         
-        # Create 3D surface
-        X = agg_data['merge_interval']
-        Y = agg_data['grid_size']
-        Z = agg_data['performance_score']
+        ax.set_xlabel('Communication Interval (steps between merges)')
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Discovery Speed vs Communication Frequency\n(Color: Discovery Efficiency, Size: Discovery Rate)')
+        ax.set_xscale('log')
+        ax.grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=ax, label='Discovery Efficiency')
         
-        scatter = ax.scatter(X, Y, Z, c=Z, cmap='viridis', s=50, alpha=0.7)
-        ax.set_xlabel('Merge Interval')
-        ax.set_ylabel('Grid Size')
-        ax.set_zlabel('Performance Score')
-        ax.set_title('Performance Landscape')
-        plt.colorbar(scatter, ax=ax, shrink=0.5)
-        
-        # Entropy vs Performance by Strategy
+        # Steps to Discovery vs Communication Efficiency by Strategy
         ax = fig.add_subplot(gs[0, 2])
         for strategy in df['strategy'].unique():
             strategy_data = df[df['strategy'] == strategy]
-            ax.scatter(strategy_data['final_entropy'], strategy_data['performance_score'], 
+            ax.scatter(strategy_data['communication_efficiency'], strategy_data['steps_to_discovery'], 
                       alpha=0.6, label=strategy, s=20, color=self.colors.get(strategy, 'gray'))
-        ax.set_xlabel('Final Entropy')
-        ax.set_ylabel('Performance Score')
-        ax.set_title('Entropy vs Performance')
+        ax.set_xlabel('Communication Efficiency')
+        ax.set_ylabel('Steps to Discovery')
+        ax.set_title('Discovery Speed vs Communication')
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
-        # Discovery Rate Heatmap
+        # Discovery Rate Heatmap (unchanged)
         ax = fig.add_subplot(gs[0, 3])
         heatmap_data = df.groupby(['pattern', 'strategy'])['discovery_rate'].mean().unstack()
         sns.heatmap(heatmap_data, annot=True, fmt='.2f', cmap='RdYlGn', ax=ax, cbar_kws={'shrink': 0.8})
         ax.set_title('Discovery Rate by Pattern & Strategy')
         
-        # Distribution plots
-        metrics = ['final_entropy', 'prediction_error', 'discovery_step', 'computation_time']
+        # MODIFIED: Distribution plots - focus on step-based metrics
+        metrics = ['steps_to_discovery', 'discovery_efficiency', 'communication_efficiency', 'computation_time']
         for i, metric in enumerate(metrics):
             ax = fig.add_subplot(gs[2 + i//2, i%2])
             
@@ -344,13 +352,13 @@ class AdvancedClusterAnalyzer:
             ax.tick_params(axis='x', rotation=45)
             ax.set_title(f'{metric.replace("_", " ").title()} Distribution')
         
-        # Grid size impact
+        # Grid size impact (unchanged)
         ax = fig.add_subplot(gs[2, 2])
         grid_performance = df.groupby(['grid_key', 'strategy'])['performance_score'].mean().unstack()
         sns.heatmap(grid_performance, annot=True, fmt='.3f', cmap='viridis', ax=ax)
         ax.set_title('Performance by Grid Size & Strategy')
         
-        # Agent number impact
+        # Agent number impact (unchanged)
         ax = fig.add_subplot(gs[2, 3])
         agent_performance = df.groupby(['n_agents', 'strategy'])['final_entropy'].mean().unstack()
         sns.heatmap(agent_performance, annot=True, fmt='.3f', cmap='viridis_r', ax=ax)
@@ -367,7 +375,7 @@ class AdvancedClusterAnalyzer:
         strategies = df['strategy'].unique()
         patterns = df['pattern'].unique()
         
-        # Strategy pairwise significance for discovery rate
+        # Strategy pairwise significance for discovery rate (unchanged)
         ax = axes[0, 0]
         p_matrix = np.ones((len(strategies), len(strategies)))
         
@@ -392,15 +400,15 @@ class AdvancedClusterAnalyzer:
                    cmap='RdYlBu_r', ax=ax, vmin=0, vmax=0.1, cbar_kws={'label': 'p-value'})
         ax.set_title('Discovery Rate Significance (p-values)')
         
-        # Strategy pairwise significance for entropy
+        # MODIFIED: Strategy pairwise significance for steps to discovery
         ax = axes[0, 1]
         p_matrix = np.ones((len(strategies), len(strategies)))
         
         for i, strategy1 in enumerate(strategies):
             for j, strategy2 in enumerate(strategies):
                 if i != j:
-                    data1 = df[df['strategy'] == strategy1]['final_entropy'].dropna()
-                    data2 = df[df['strategy'] == strategy2]['final_entropy'].dropna()
+                    data1 = df[df['strategy'] == strategy1]['steps_to_discovery'].dropna()
+                    data2 = df[df['strategy'] == strategy2]['steps_to_discovery'].dropna()
                     
                     if len(data1) > 5 and len(data2) > 5:
                         try:
@@ -411,17 +419,17 @@ class AdvancedClusterAnalyzer:
         
         sns.heatmap(p_matrix, annot=True, fmt='.3f', xticklabels=strategies, yticklabels=strategies,
                    cmap='RdYlBu_r', ax=ax, vmin=0, vmax=0.1, cbar_kws={'label': 'p-value'})
-        ax.set_title('Final Entropy Significance (p-values)')
+        ax.set_title('Steps to Discovery Significance (p-values)')
         
-        # Effect sizes
+        # MODIFIED: Effect sizes for discovery efficiency
         ax = axes[1, 0]
         effect_matrix = np.zeros((len(strategies), len(strategies)))
         
         for i, strategy1 in enumerate(strategies):
             for j, strategy2 in enumerate(strategies):
                 if i != j:
-                    data1 = df[df['strategy'] == strategy1]['performance_score'].dropna()
-                    data2 = df[df['strategy'] == strategy2]['performance_score'].dropna()
+                    data1 = df[df['strategy'] == strategy1]['discovery_efficiency'].dropna()
+                    data2 = df[df['strategy'] == strategy2]['discovery_efficiency'].dropna()
                     
                     if len(data1) > 5 and len(data2) > 5:
                         # Cohen's d effect size
@@ -432,9 +440,9 @@ class AdvancedClusterAnalyzer:
         
         sns.heatmap(effect_matrix, annot=True, fmt='.2f', xticklabels=strategies, yticklabels=strategies,
                    cmap='YlOrRd', ax=ax, cbar_kws={'label': 'Effect Size (Cohen\'s d)'})
-        ax.set_title('Performance Effect Sizes')
+        ax.set_title('Discovery Efficiency Effect Sizes')
         
-        # Configuration performance summary
+        # Configuration performance summary (unchanged)
         ax = axes[1, 1]
         config_performance = df.groupby(['grid_key', 'n_agents'])['performance_score'].mean().unstack()
         sns.heatmap(config_performance, annot=True, fmt='.3f', cmap='viridis', ax=ax)
@@ -448,7 +456,7 @@ class AdvancedClusterAnalyzer:
         """Analyze convergence and temporal dynamics"""
         fig, axes = plt.subplots(3, 2, figsize=(15, 18))
         
-        # 1. Convergence speed analysis
+        # 1. Convergence speed analysis (unchanged)
         ax = axes[0, 0]
         if 'convergence_speed' in df.columns:
             convergence_data = df.groupby('strategy')['convergence_speed'].apply(list).to_dict()
@@ -464,65 +472,72 @@ class AdvancedClusterAnalyzer:
             ax.set_title('Distribution of Convergence Speeds')
             ax.legend()
         
-        # 2. Information gain over time
+        # MODIFIED: Steps to Discovery vs Communication Interval
         ax = axes[0, 1]
-        info_gain = df.groupby('strategy')['info_gain'].mean().sort_values()
-        bars = ax.bar(range(len(info_gain)), info_gain.values, 
-                     color=[self.colors.get(s, 'gray') for s in info_gain.index])
-        ax.set_xticks(range(len(info_gain)))
-        ax.set_xticklabels(info_gain.index, rotation=45)
-        ax.set_ylabel('Average Information Gain')
-        ax.set_title('Information Gain by Strategy')
+        step_data = df.groupby('strategy')['steps_to_discovery'].mean().sort_values()
+        bars = ax.bar(range(len(step_data)), step_data.values, 
+                     color=[self.colors.get(s, 'gray') for s in step_data.index])
+        ax.set_xticks(range(len(step_data)))
+        ax.set_xticklabels(step_data.index, rotation=45)
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Discovery Speed by Strategy')
         
         # Add value labels on bars
-        for bar, value in zip(bars, info_gain.values):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                   f'{value:.2f}', ha='center', va='bottom')
+        for bar, value in zip(bars, step_data.values):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01*max(step_data.values),
+                   f'{value:.0f}', ha='center', va='bottom')
         
-        # 3. Entropy reduction rate
+        # MODIFIED: Discovery Efficiency vs Communication Frequency
         ax = axes[1, 0]
-        if 'entropy_reduction_rate' in df.columns:
-            sns.violinplot(data=df, x='strategy', y='entropy_reduction_rate', ax=ax)
-            ax.tick_params(axis='x', rotation=45)
-            ax.set_title('Entropy Reduction Rate Distribution')
+        comm_data = df[df['communication_efficiency'] > 0]  # Exclude no_comm
+        sns.scatterplot(data=comm_data, x='communication_efficiency', y='discovery_efficiency', 
+                       hue='strategy', ax=ax, s=60)
+        ax.set_xlabel('Communication Efficiency (1/merge_interval)')
+        ax.set_ylabel('Discovery Efficiency')
+        ax.set_title('Discovery vs Communication Efficiency')
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
-        # 4. Performance vs computational cost
+        # Performance vs computational cost (unchanged)
         ax = axes[1, 1]
         scatter = ax.scatter(df['computation_time'], df['performance_score'], 
-                           c=df['merge_interval'].replace(float('inf'), 1000),
+                           c=df['communication_overhead'].replace(float('inf'), 1000),
                            cmap='coolwarm', alpha=0.6, s=30)
         ax.set_xlabel('Computation Time (seconds)')
         ax.set_ylabel('Performance Score')
         ax.set_title('Performance vs Computational Cost')
-        plt.colorbar(scatter, ax=ax, label='Merge Interval')
+        plt.colorbar(scatter, ax=ax, label='Communication Overhead')
         
-        # 5. Discovery dynamics by pattern
+        # Discovery dynamics by pattern (unchanged)
         ax = axes[2, 0]
         pattern_discovery = df.groupby(['pattern', 'strategy'])['discovery_rate'].mean().unstack()
         sns.heatmap(pattern_discovery, annot=True, fmt='.2f', cmap='RdYlGn', ax=ax)
         ax.set_title('Discovery Success by Pattern & Strategy')
         
-        # 6. Robustness analysis (variance across trials)
+        # MODIFIED: Communication overhead analysis
         ax = axes[2, 1]
-        robustness = df.groupby('strategy').agg({
-            'final_entropy': 'std',
-            'prediction_error': 'std',
-            'performance_score': 'std'
-        })
+        overhead_analysis = df.groupby('strategy').agg({
+            'steps_to_discovery': 'mean',
+            'communication_overhead': 'mean',
+            'discovery_rate': 'mean'
+        }).reset_index()
         
-        x = np.arange(len(robustness))
-        width = 0.25
+        # Create bubble plot
+        scatter = ax.scatter(overhead_analysis['communication_overhead'], 
+                           overhead_analysis['steps_to_discovery'],
+                           s=overhead_analysis['discovery_rate'] * 500,
+                           c=range(len(overhead_analysis)), 
+                           cmap='viridis', alpha=0.7)
         
-        ax.bar(x - width, robustness['final_entropy'], width, label='Entropy Std', alpha=0.8)
-        ax.bar(x, robustness['prediction_error'], width, label='Error Std', alpha=0.8)
-        ax.bar(x + width, robustness['performance_score'], width, label='Performance Std', alpha=0.8)
+        # Add labels
+        for _, row in overhead_analysis.iterrows():
+            ax.annotate(row['strategy'][:8], 
+                       (row['communication_overhead'], row['steps_to_discovery']),
+                       xytext=(5, 5), textcoords='offset points', fontsize=8)
         
-        ax.set_xlabel('Strategy')
-        ax.set_ylabel('Standard Deviation (Robustness)')
-        ax.set_title('Robustness Analysis (Lower = More Robust)')
-        ax.set_xticks(x)
-        ax.set_xticklabels(robustness.index, rotation=45)
-        ax.legend()
+        ax.set_xlabel('Communication Overhead (steps)')
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Communication Cost vs Discovery Speed\n(Bubble size: Discovery Rate)')
+        ax.set_xscale('log')
         
         plt.tight_layout()
         plt.savefig(self.analysis_dir / 'convergence_dynamics.png', dpi=300, bbox_inches='tight')
@@ -532,23 +547,23 @@ class AdvancedClusterAnalyzer:
         """Analyze scalability across grid sizes and agent numbers"""
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         
-        # 1. Performance scaling with grid size
+        # MODIFIED: Performance scaling with grid size - focus on steps
         ax = axes[0, 0]
         for strategy in ['full_comm', 'interval_25', 'interval_100', 'no_comm']:
             if strategy in df['strategy'].values:
                 strategy_data = df[df['strategy'] == strategy]
-                scaling_data = strategy_data.groupby('grid_size')['performance_score'].mean()
+                scaling_data = strategy_data.groupby('grid_size')['steps_to_discovery'].mean()
                 ax.plot(scaling_data.index, scaling_data.values, 'o-', 
                        label=strategy, linewidth=2, markersize=6)
         
         ax.set_xlabel('Grid Size (total states)')
-        ax.set_ylabel('Performance Score')
-        ax.set_title('Performance Scaling with Grid Size')
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Discovery Speed Scaling with Grid Size')
         ax.set_xscale('log')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # 2. Computational complexity scaling
+        # Computational complexity scaling (unchanged)
         ax = axes[0, 1]
         comp_scaling = df.groupby(['grid_size', 'n_agents'])['computation_time'].mean().reset_index()
         
@@ -565,35 +580,35 @@ class AdvancedClusterAnalyzer:
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # 3. Agent scaling efficiency
+        # MODIFIED: Agent scaling efficiency - focus on discovery efficiency
         ax = axes[0, 2]
-        agent_efficiency = df.groupby(['n_agents', 'strategy'])['search_efficiency'].mean().unstack()
+        agent_efficiency = df.groupby(['n_agents', 'strategy'])['discovery_efficiency'].mean().unstack()
         
         for strategy in agent_efficiency.columns:
             ax.plot(agent_efficiency.index, agent_efficiency[strategy], 
                    'o-', label=strategy, linewidth=2, markersize=6)
         
         ax.set_xlabel('Number of Agents')
-        ax.set_ylabel('Search Efficiency (discoveries/second)')
-        ax.set_title('Search Efficiency by Agent Count')
+        ax.set_ylabel('Discovery Efficiency')
+        ax.set_title('Discovery Efficiency by Agent Count')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # 4. Memory efficiency (entropy reduction per merge)
+        # MODIFIED: Communication efficiency per merge
         ax = axes[1, 0]
         if 'total_merges' in df.columns:
             df_with_merges = df[df['total_merges'] > 0].copy()
-            df_with_merges['entropy_per_merge'] = df_with_merges['info_gain'] / df_with_merges['total_merges']
+            df_with_merges['steps_per_merge'] = df_with_merges['steps_to_discovery'] / df_with_merges['total_merges']
             
-            merge_efficiency = df_with_merges.groupby('strategy')['entropy_per_merge'].mean()
+            merge_efficiency = df_with_merges.groupby('strategy')['steps_per_merge'].mean()
             bars = ax.bar(range(len(merge_efficiency)), merge_efficiency.values,
                          color=[self.colors.get(s, 'gray') for s in merge_efficiency.index])
             ax.set_xticks(range(len(merge_efficiency)))
             ax.set_xticklabels(merge_efficiency.index, rotation=45)
-            ax.set_ylabel('Information Gain per Merge')
-            ax.set_title('Communication Efficiency')
+            ax.set_ylabel('Average Steps per Merge Event')
+            ax.set_title('Communication Frequency Analysis')
         
-        # 5. Pattern complexity analysis
+        # Pattern complexity analysis (unchanged)
         ax = axes[1, 1]
         pattern_complexity = df.groupby('pattern').agg({
             'prediction_error': 'mean',
@@ -618,29 +633,30 @@ class AdvancedClusterAnalyzer:
         ax.set_xticklabels(normalized.index)
         ax.legend()
         
-        # 6. Optimal configuration finder
+        # MODIFIED: Optimal configuration finder - focus on steps and communication
         ax = axes[1, 2]
         
-        # Find Pareto frontier: best performance for each computational cost level
+        # Find Pareto frontier: best discovery speed for each communication cost level
         pareto_data = df.groupby(['strategy', 'pattern']).agg({
-            'performance_score': 'mean',
-            'computation_time': 'mean',
-            'final_entropy': 'mean'
+            'steps_to_discovery': 'mean',
+            'communication_overhead': 'mean',
+            'discovery_rate': 'mean'
         }).reset_index()
         
-        scatter = ax.scatter(pareto_data['computation_time'], pareto_data['performance_score'],
-                           c=pareto_data['final_entropy'], cmap='viridis_r', s=100, alpha=0.7)
+        scatter = ax.scatter(pareto_data['communication_overhead'], pareto_data['steps_to_discovery'],
+                           c=pareto_data['discovery_rate'], cmap='RdYlGn', s=100, alpha=0.7, vmin=0, vmax=1)
         
         # Annotate points
         for _, row in pareto_data.iterrows():
             ax.annotate(f"{row['strategy'][:8]}\n{row['pattern'][:4]}", 
-                       (row['computation_time'], row['performance_score']),
+                       (row['communication_overhead'], row['steps_to_discovery']),
                        xytext=(5, 5), textcoords='offset points', fontsize=8)
         
-        ax.set_xlabel('Average Computation Time (s)')
-        ax.set_ylabel('Average Performance Score')
-        ax.set_title('Performance vs Cost Trade-off')
-        plt.colorbar(scatter, ax=ax, label='Final Entropy')
+        ax.set_xlabel('Communication Overhead (steps between merges)')
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Discovery Speed vs Communication Cost')
+        ax.set_xscale('log')
+        plt.colorbar(scatter, ax=ax, label='Discovery Rate')
         
         plt.tight_layout()
         plt.savefig(self.analysis_dir / 'scalability_analysis.png', dpi=300, bbox_inches='tight')
@@ -650,7 +666,7 @@ class AdvancedClusterAnalyzer:
         """Analyze communication efficiency and overhead"""
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         
-        # 1. Communication frequency vs performance
+        # MODIFIED: Communication frequency vs discovery speed
         ax = axes[0, 0]
         comm_data = df[df['merge_interval'] != float('inf')].copy()
         comm_data['comm_frequency'] = 1 / comm_data['merge_interval']
@@ -658,86 +674,89 @@ class AdvancedClusterAnalyzer:
         for pattern in df['pattern'].unique():
             pattern_data = comm_data[comm_data['pattern'] == pattern]
             freq_perf = pattern_data.groupby('comm_frequency').agg({
-                'performance_score': 'mean',
-                'final_entropy': 'mean'
+                'steps_to_discovery': 'mean',
+                'discovery_rate': 'mean'
             })
             
-            ax.plot(freq_perf.index, freq_perf['performance_score'], 'o-', 
-                   label=f'{pattern} Performance', linewidth=2, markersize=6)
+            ax.plot(freq_perf.index, freq_perf['steps_to_discovery'], 'o-', 
+                   label=f'{pattern} Steps', linewidth=2, markersize=6)
         
         ax.set_xlabel('Communication Frequency (1/merge_interval)')
-        ax.set_ylabel('Performance Score')
-        ax.set_title('Communication Frequency vs Performance')
+        ax.set_ylabel('Average Steps to Discovery')
+        ax.set_title('Communication Frequency vs Discovery Speed')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # 2. Diminishing returns analysis
+        # MODIFIED: Steps saved by communication
         ax = axes[0, 1]
         
-        # Calculate marginal benefit of additional communication
+        # Calculate steps saved compared to no communication
         strategies_ordered = ['no_comm', 'interval_500', 'interval_200', 'interval_100', 
                              'interval_50', 'interval_25', 'interval_10', 'full_comm']
         available_strategies = [s for s in strategies_ordered if s in df['strategy'].unique()]
         
-        marginal_benefits = []
+        steps_saved = []
         strategy_labels = []
         
-        baseline_perf = df[df['strategy'] == 'no_comm']['performance_score'].mean()
+        baseline_steps = df[df['strategy'] == 'no_comm']['steps_to_discovery'].mean() if 'no_comm' in df['strategy'].values else 1000
         
-        for strategy in available_strategies[1:]:  # Skip no_comm
-            strategy_perf = df[df['strategy'] == strategy]['performance_score'].mean()
-            marginal_benefit = strategy_perf - baseline_perf
-            marginal_benefits.append(marginal_benefit)
-            strategy_labels.append(strategy)
-            baseline_perf = strategy_perf
+        for strategy in available_strategies:
+            if strategy != 'no_comm':
+                strategy_steps = df[df['strategy'] == strategy]['steps_to_discovery'].mean()
+                saved = baseline_steps - strategy_steps
+                steps_saved.append(saved)
+                strategy_labels.append(strategy)
         
-        bars = ax.bar(range(len(marginal_benefits)), marginal_benefits,
+        bars = ax.bar(range(len(steps_saved)), steps_saved,
                      color=[self.colors.get(s, 'gray') for s in strategy_labels])
         ax.set_xticks(range(len(strategy_labels)))
         ax.set_xticklabels(strategy_labels, rotation=45)
-        ax.set_ylabel('Marginal Performance Benefit')
-        ax.set_title('Diminishing Returns of Communication')
+        ax.set_ylabel('Steps Saved vs No Communication')
+        ax.set_title('Benefit of Communication Strategies')
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
         
-        # 3. Communication overhead analysis
+        # Add value labels
+        for bar, value in zip(bars, steps_saved):
+            ax.text(bar.get_x() + bar.get_width()/2, 
+                   bar.get_height() + (5 if value > 0 else -15),
+                   f'{value:.0f}', ha='center', va='bottom' if value > 0 else 'top')
+        
+        # MODIFIED: Communication overhead vs discovery success
         ax = axes[1, 0]
         
-        # Estimate communication cost (number of merges * agents^2)
-        df_comm_cost = df.copy()
-        df_comm_cost['comm_cost'] = df_comm_cost['total_merges'] * df_comm_cost['n_agents']**2
+        # Calculate communication cost vs benefit
+        df_comm_analysis = df.copy()
+        df_comm_analysis['comm_steps'] = 1000 - df_comm_analysis['communication_overhead']  # Higher = more communication
         
-        cost_benefit = df_comm_cost.groupby('strategy').agg({
-            'comm_cost': 'mean',
-            'performance_score': 'mean',
-            'computation_time': 'mean'
+        cost_benefit = df_comm_analysis.groupby('strategy').agg({
+            'comm_steps': 'mean',
+            'discovery_rate': 'mean',
+            'steps_to_discovery': 'mean'
         })
         
-        # Calculate efficiency ratio
-        cost_benefit['efficiency_ratio'] = cost_benefit['performance_score'] / (1 + cost_benefit['comm_cost'])
-        
-        scatter = ax.scatter(cost_benefit['comm_cost'], cost_benefit['efficiency_ratio'],
-                           s=cost_benefit['computation_time'] * 10, alpha=0.7,
+        scatter = ax.scatter(cost_benefit['comm_steps'], cost_benefit['discovery_rate'],
+                           s=1000/cost_benefit['steps_to_discovery'] * 100, alpha=0.7,
                            c=range(len(cost_benefit)), cmap='viridis')
         
         for strategy, row in cost_benefit.iterrows():
-            ax.annotate(strategy, (row['comm_cost'], row['efficiency_ratio']),
+            ax.annotate(strategy, (row['comm_steps'], row['discovery_rate']),
                        xytext=(5, 5), textcoords='offset points')
         
-        ax.set_xlabel('Communication Cost (merges × agents²)')
-        ax.set_ylabel('Efficiency Ratio')
-        ax.set_title('Communication Cost vs Efficiency')
+        ax.set_xlabel('Communication Investment (1000 - overhead)')
+        ax.set_ylabel('Discovery Success Rate')
+        ax.set_title('Communication Investment vs Success Rate')
         
-        # 4. Optimal communication strategy finder
+        # MODIFIED: Optimal communication intervals by scenario
         ax = axes[1, 1]
         
-        # For each pattern and grid size, find best strategy
+        # For each pattern and grid size, find strategy with best step efficiency
         optimal_strategies = {}
         
         for pattern in df['pattern'].unique():
             for grid_key in df['grid_key'].unique():
                 subset = df[(df['pattern'] == pattern) & (df['grid_key'] == grid_key)]
                 if len(subset) > 0:
-                    best_strategy = subset.groupby('strategy')['performance_score'].mean().idxmax()
+                    best_strategy = subset.groupby('strategy')['discovery_efficiency'].mean().idxmax()
                     optimal_strategies[f"{pattern}_{grid_key}"] = best_strategy
         
         # Count frequency of each strategy being optimal
@@ -751,7 +770,7 @@ class AdvancedClusterAnalyzer:
         ax.set_xticks(range(len(strategies)))
         ax.set_xticklabels(strategies, rotation=45)
         ax.set_ylabel('Number of Configurations Where Optimal')
-        ax.set_title('Frequency of Optimal Strategies')
+        ax.set_title('Most Efficient Strategies by Scenario')
         
         # Add percentage labels
         total_configs = len(optimal_strategies)
@@ -772,35 +791,35 @@ class AdvancedClusterAnalyzer:
             fig, axes = plt.subplots(2, 3, figsize=(18, 12))
             fig.suptitle(f'Deep Dive: {pattern.upper()} Movement Pattern', fontsize=16)
             
-            # 1. Strategy performance ranking
+            # MODIFIED: Strategy performance ranking - focus on discovery efficiency
             ax = axes[0, 0]
             strategy_ranking = pattern_data.groupby('strategy').agg({
-                'performance_score': ['mean', 'std'],
-                'discovery_rate': 'mean',
-                'final_entropy': 'mean'
+                'discovery_efficiency': ['mean', 'std'],
+                'steps_to_discovery': 'mean',
+                'discovery_rate': 'mean'
             }).round(3)
             
             # Flatten column names
             strategy_ranking.columns = ['_'.join(col).strip() for col in strategy_ranking.columns]
-            strategy_ranking = strategy_ranking.sort_values('performance_score_mean', ascending=False)
+            strategy_ranking = strategy_ranking.sort_values('discovery_efficiency_mean', ascending=False)
             
             # Plot ranking
             y_pos = np.arange(len(strategy_ranking))
-            bars = ax.barh(y_pos, strategy_ranking['performance_score_mean'],
-                          xerr=strategy_ranking['performance_score_std'],
+            bars = ax.barh(y_pos, strategy_ranking['discovery_efficiency_mean'],
+                          xerr=strategy_ranking['discovery_efficiency_std'],
                           color=[self.colors.get(s, 'gray') for s in strategy_ranking.index])
             
             ax.set_yticks(y_pos)
             ax.set_yticklabels(strategy_ranking.index)
-            ax.set_xlabel('Performance Score')
+            ax.set_xlabel('Discovery Efficiency')
             ax.set_title(f'{pattern}: Strategy Ranking')
             
             # Add values
-            for i, (bar, mean_val) in enumerate(zip(bars, strategy_ranking['performance_score_mean'])):
+            for i, (bar, mean_val) in enumerate(zip(bars, strategy_ranking['discovery_efficiency_mean'])):
                 ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2,
-                       f'{mean_val:.3f}', va='center', fontsize=9)
+                       f'{mean_val:.4f}', va='center', fontsize=9)
             
-            # 2. Grid size sensitivity
+            # Grid size sensitivity (unchanged)
             ax = axes[0, 1]
             grid_sensitivity = pattern_data.groupby(['grid_key', 'strategy'])['performance_score'].mean().unstack()
             
@@ -815,77 +834,69 @@ class AdvancedClusterAnalyzer:
             ax.legend()
             ax.grid(True, alpha=0.3)
             
-            # 3. Discovery time distribution
+            # MODIFIED: Discovery step distribution
             ax = axes[0, 2]
             
-            discovery_times = {}
+            discovery_steps = {}
             for strategy in pattern_data['strategy'].unique():
                 strategy_data = pattern_data[pattern_data['strategy'] == strategy]
-                times = strategy_data[strategy_data['target_found']]['discovery_step'].values
-                if len(times) > 0:
-                    discovery_times[strategy] = times
+                steps = strategy_data['steps_to_discovery'].values
+                if len(steps) > 0:
+                    discovery_steps[strategy] = steps
             
-            if discovery_times:
-                ax.boxplot(discovery_times.values(), labels=discovery_times.keys())
+            if discovery_steps:
+                ax.boxplot(discovery_steps.values(), labels=discovery_steps.keys())
                 ax.tick_params(axis='x', rotation=45)
-                ax.set_ylabel('Discovery Step')
-                ax.set_title(f'{pattern}: Discovery Time Distribution')
+                ax.set_ylabel('Steps to Discovery')
+                ax.set_title(f'{pattern}: Discovery Speed Distribution')
             
-            # 4. Entropy evolution
+            # MODIFIED: Communication efficiency evolution
             ax = axes[1, 0]
             
-            # Sample trials with entropy history
-            sample_trials = pattern_data.sample(min(50, len(pattern_data)))
+            # Show communication efficiency by strategy
+            comm_efficiency = pattern_data.groupby('strategy')['communication_efficiency'].mean()
+            bars = ax.bar(range(len(comm_efficiency)), comm_efficiency.values,
+                         color=[self.colors.get(s, 'gray') for s in comm_efficiency.index])
+            ax.set_xticks(range(len(comm_efficiency)))
+            ax.set_xticklabels(comm_efficiency.index, rotation=45)
+            ax.set_ylabel('Average Communication Efficiency')
+            ax.set_title(f'{pattern}: Communication Patterns')
             
-            for _, trial_row in sample_trials.iterrows():
-                # This would require loading individual trial data - simplified for now
-                # Placeholder: show final entropy vs discovery success
-                pass
-            
-            # Simplified: final entropy by strategy
-            entropy_by_strategy = pattern_data.groupby('strategy')['final_entropy'].mean()
-            bars = ax.bar(range(len(entropy_by_strategy)), entropy_by_strategy.values,
-                         color=[self.colors.get(s, 'gray') for s in entropy_by_strategy.index])
-            ax.set_xticks(range(len(entropy_by_strategy)))
-            ax.set_xticklabels(entropy_by_strategy.index, rotation=45)
-            ax.set_ylabel('Average Final Entropy')
-            ax.set_title(f'{pattern}: Final Uncertainty')
-            
-            # 5. Agent coordination efficiency
+            # Agent coordination efficiency (unchanged)
             ax = axes[1, 1]
             agent_coord = pattern_data.groupby(['n_agents', 'strategy'])['discovery_rate'].mean().unstack()
             
             sns.heatmap(agent_coord, annot=True, fmt='.2f', cmap='RdYlGn', ax=ax)
             ax.set_title(f'{pattern}: Agent Coordination Efficiency')
             
-            # 6. Statistical summary table
+            # MODIFIED: Statistical summary table - focus on step metrics
             ax = axes[1, 2]
             ax.axis('off')
             
             # Create summary statistics table
             summary_stats = pattern_data.groupby('strategy').agg({
                 'discovery_rate': ['mean', 'std'],
-                'prediction_error': ['mean', 'std'],
-                'final_entropy': ['mean', 'std'],
-                'computation_time': ['mean', 'std']
+                'steps_to_discovery': ['mean', 'std'],
+                'discovery_efficiency': ['mean', 'std'],
+                'communication_efficiency': ['mean', 'std']
             }).round(3)
             
             # Format as text table
             table_text = f"{pattern.upper()} SUMMARY STATISTICS\n\n"
-            table_text += "Strategy | Discovery Rate | Pred Error | Final Entropy | Comp Time\n"
+            table_text += "Strategy | Discovery Rate | Steps to Disc | Discovery Eff | Comm Eff\n"
             table_text += "-" * 70 + "\n"
             
             for strategy in summary_stats.index:
                 dr_mean = summary_stats.loc[strategy, ('discovery_rate', 'mean')]
                 dr_std = summary_stats.loc[strategy, ('discovery_rate', 'std')]
-                pe_mean = summary_stats.loc[strategy, ('prediction_error', 'mean')]
-                pe_std = summary_stats.loc[strategy, ('prediction_error', 'std')]
-                fe_mean = summary_stats.loc[strategy, ('final_entropy', 'mean')]
-                fe_std = summary_stats.loc[strategy, ('final_entropy', 'std')]
-                ct_mean = summary_stats.loc[strategy, ('computation_time', 'mean')]
-                ct_std = summary_stats.loc[strategy, ('computation_time', 'std')]
+                st_mean = summary_stats.loc[strategy, ('steps_to_discovery', 'mean')]
+                st_std = summary_stats.loc[strategy, ('steps_to_discovery', 'std')]
+                de_mean = summary_stats.loc[strategy, ('discovery_efficiency', 'mean')]
+                de_std = summary_stats.loc[strategy, ('discovery_efficiency', 'std')]
+                ce_mean = summary_stats.loc[strategy, ('communication_efficiency', 'mean')]
+                ce_std = summary_stats.loc[strategy, ('communication_efficiency', 'std')]
                 
-                table_text += f"{strategy[:12]:<12} | {dr_mean:.3f}±{dr_std:.3f} | {pe_mean:.2f}±{pe_std:.2f} | {fe_mean:.3f}±{fe_std:.3f} | {ct_mean:.3f}±{ct_std:.3f}\n"
+                table_text += f"{strategy[:12]:<12} | {dr_mean:.3f}±{dr_std:.3f} | {st_mean:.0f}±{st_std:.0f} | {de_mean:.4f}±{de_std:.4f} | {ce_mean:.3f}±{ce_std:.3f}\n"
             
             ax.text(0.05, 0.95, table_text, transform=ax.transAxes, fontfamily='monospace',
                    fontsize=8, verticalalignment='top')
@@ -898,7 +909,7 @@ class AdvancedClusterAnalyzer:
         """Analyze resource optimization and recommendations"""
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         
-        # 1. Performance per computational dollar
+        # MODIFIED: Steps efficiency per computational cost
         ax = axes[0, 0]
         
         # Normalize computation time to "cost units"
@@ -907,74 +918,73 @@ class AdvancedClusterAnalyzer:
         df_cost['relative_cost'] = df_cost['computation_time'] / max_time
         
         cost_efficiency = df_cost.groupby('strategy').agg({
-            'performance_score': 'mean',
+            'discovery_efficiency': 'mean',
             'relative_cost': 'mean'
         })
-        cost_efficiency['efficiency'] = cost_efficiency['performance_score'] / cost_efficiency['relative_cost']
+        cost_efficiency['step_cost_efficiency'] = cost_efficiency['discovery_efficiency'] / cost_efficiency['relative_cost']
         
-        bars = ax.bar(range(len(cost_efficiency)), cost_efficiency['efficiency'],
+        bars = ax.bar(range(len(cost_efficiency)), cost_efficiency['step_cost_efficiency'],
                      color=[self.colors.get(s, 'gray') for s in cost_efficiency.index])
         ax.set_xticks(range(len(cost_efficiency)))
         ax.set_xticklabels(cost_efficiency.index, rotation=45)
-        ax.set_ylabel('Performance per Computational Cost')
-        ax.set_title('Cost Efficiency Ranking')
+        ax.set_ylabel('Discovery Efficiency per Computational Cost')
+        ax.set_title('Step Efficiency Ranking')
         
-        # 2. Recommended configurations
+        # MODIFIED: Recommended configurations - focus on step metrics
         ax = axes[0, 1]
         
         # Find best strategy for each scenario
         recommendations = {}
-        scenarios = ['high_performance', 'balanced', 'low_cost']
         
-        # High performance: maximize performance regardless of cost
-        high_perf = df.groupby('strategy')['performance_score'].mean().idxmax()
-        recommendations['High Performance'] = high_perf
+        # Fastest discovery: minimize steps to discovery
+        fastest = df.groupby('strategy')['steps_to_discovery'].mean().idxmin()
+        recommendations['Fastest Discovery'] = fastest
         
-        # Balanced: best performance/cost ratio
-        balanced = cost_efficiency['efficiency'].idxmax()
-        recommendations['Balanced'] = balanced
+        # Most efficient: best discovery efficiency
+        most_efficient = df.groupby('strategy')['discovery_efficiency'].mean().idxmax()
+        recommendations['Most Efficient'] = most_efficient
         
-        # Low cost: minimize computation time while maintaining reasonable performance
-        low_cost_candidates = df[df['performance_score'] > df['performance_score'].quantile(0.7)]
-        low_cost = low_cost_candidates.groupby('strategy')['computation_time'].mean().idxmin()
-        recommendations['Low Cost'] = low_cost
+        # Least communication: minimize communication overhead while maintaining performance
+        low_comm_candidates = df[df['discovery_rate'] > df['discovery_rate'].quantile(0.7)]
+        least_comm = low_comm_candidates.groupby('strategy')['communication_overhead'].mean().idxmax()
+        recommendations['Least Communication'] = least_comm
         
         # Plot recommendations
         scenario_names = list(recommendations.keys())
         recommended_strategies = list(recommendations.values())
         
-        # Get performance scores for recommended strategies
-        perf_scores = []
+        # Get discovery efficiency scores for recommended strategies
+        efficiency_scores = []
         for strategy in recommended_strategies:
-            score = df[df['strategy'] == strategy]['performance_score'].mean()
-            perf_scores.append(score)
+            score = df[df['strategy'] == strategy]['discovery_efficiency'].mean()
+            efficiency_scores.append(score)
         
-        bars = ax.bar(scenario_names, perf_scores,
+        bars = ax.bar(scenario_names, efficiency_scores,
                      color=[self.colors.get(s, 'gray') for s in recommended_strategies])
-        ax.set_ylabel('Performance Score')
+        ax.set_ylabel('Discovery Efficiency')
         ax.set_title('Recommended Configurations by Scenario')
         
         # Add strategy labels on bars
         for bar, strategy in zip(bars, recommended_strategies):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01*max(efficiency_scores),
                    strategy, ha='center', va='bottom', rotation=45, fontsize=9)
         
-        # 3. Sensitivity analysis
+        # Sensitivity analysis (unchanged)
         ax = axes[1, 0]
         
         # Calculate coefficient of variation for each strategy
         sensitivity = df.groupby('strategy').agg({
-            'performance_score': lambda x: x.std() / x.mean(),  # CV
+            'steps_to_discovery': lambda x: x.std() / x.mean() if x.mean() > 0 else 0,
             'discovery_rate': lambda x: x.std() / x.mean() if x.mean() > 0 else 0,
-            'final_entropy': lambda x: x.std() / x.mean() if x.mean() > 0 else 0
+            'discovery_efficiency': lambda x: x.std() / x.mean() if x.mean() > 0 else 0
         })
         
         x = np.arange(len(sensitivity))
         width = 0.25
         
-        ax.bar(x - width, sensitivity['performance_score'], width, label='Performance', alpha=0.8)
-        ax.bar(x, sensitivity['discovery_rate'], width, label='Discovery Rate', alpha=0.8)
-        ax.bar(x + width, sensitivity['final_entropy'], width, label='Final Entropy', alpha=0.8)
+        ax.bar(x - width, sensitivity['steps_to_discovery'], width, label='Steps Variability', alpha=0.8)
+        ax.bar(x, sensitivity['discovery_rate'], width, label='Discovery Rate Variability', alpha=0.8)
+        ax.bar(x + width, sensitivity['discovery_efficiency'], width, label='Efficiency Variability', alpha=0.8)
         
         ax.set_xlabel('Strategy')
         ax.set_ylabel('Coefficient of Variation (lower = more robust)')
@@ -983,33 +993,38 @@ class AdvancedClusterAnalyzer:
         ax.set_xticklabels(sensitivity.index, rotation=45)
         ax.legend()
         
-        # 4. Decision matrix
+        # MODIFIED: Decision matrix - focus on step and communication metrics
         ax = axes[1, 1]
         ax.axis('off')
         
         # Create decision matrix text
         decision_text = "STRATEGY DECISION MATRIX\n\n"
-        decision_text += "Scenario | Recommended Strategy | Performance | Cost | Robustness\n"
-        decision_text += "-" * 65 + "\n"
+        decision_text += "Scenario | Recommended Strategy | Avg Steps | Comm Cost | Discovery Rate\n"
+        decision_text += "-" * 70 + "\n"
         
         for scenario, strategy in recommendations.items():
-            perf = df[df['strategy'] == strategy]['performance_score'].mean()
-            cost = df[df['strategy'] == strategy]['computation_time'].mean()
-            robust = sensitivity.loc[strategy, 'performance_score']
+            steps = df[df['strategy'] == strategy]['steps_to_discovery'].mean()
+            comm_cost = df[df['strategy'] == strategy]['communication_overhead'].mean()
+            disc_rate = df[df['strategy'] == strategy]['discovery_rate'].mean()
             
-            cost_level = "Low" if cost < df['computation_time'].quantile(0.33) else "Med" if cost < df['computation_time'].quantile(0.67) else "High"
-            robust_level = "High" if robust < 0.1 else "Med" if robust < 0.2 else "Low"
+            comm_level = "Low" if comm_cost > 100 else "Med" if comm_cost > 10 else "High"
             
-            decision_text += f"{scenario:<15} | {strategy:<18} | {perf:.3f} | {cost_level:<4} | {robust_level:<4}\n"
+            decision_text += f"{scenario[:15]:<15} | {strategy:<18} | {steps:.0f} | {comm_level:<4} | {disc_rate:.3f}\n"
         
         decision_text += "\n\nKEY INSIGHTS:\n"
-        decision_text += f"• Best overall: {high_perf}\n"
-        decision_text += f"• Most efficient: {balanced}\n"
-        decision_text += f"• Most economical: {low_cost}\n"
+        decision_text += f"• Fastest discovery: {fastest}\n"
+        decision_text += f"• Most efficient: {most_efficient}\n"
+        decision_text += f"• Least communication: {least_comm}\n"
         
         # Find most robust strategy
-        most_robust = sensitivity['performance_score'].idxmin()
+        most_robust = sensitivity['steps_to_discovery'].idxmin()
         decision_text += f"• Most robust: {most_robust}\n"
+        
+        # Communication trade-offs
+        decision_text += f"\nCOMMUNICATION TRADE-OFFS:\n"
+        decision_text += f"• Full communication: Fastest but highest overhead\n"
+        decision_text += f"• No communication: Slowest but no overhead\n"
+        decision_text += f"• Interval strategies: Balance speed vs cost\n"
         
         ax.text(0.05, 0.95, decision_text, transform=ax.transAxes, fontfamily='monospace',
                fontsize=10, verticalalignment='top')
@@ -1026,13 +1041,13 @@ class AdvancedClusterAnalyzer:
         # Calculate key metrics
         total_trials = len(df)
         unique_configs = len(df.groupby(['grid_key', 'n_agents', 'pattern', 'strategy']))
-        best_overall = df.groupby('strategy')['performance_score'].mean().idxmax()
-        worst_overall = df.groupby('strategy')['performance_score'].mean().idxmin()
+        best_overall = df.groupby('strategy')['discovery_efficiency'].mean().idxmax()  # MODIFIED
+        worst_overall = df.groupby('strategy')['discovery_efficiency'].mean().idxmin()  # MODIFIED
         
-        # Performance improvements
-        baseline_perf = df[df['strategy'] == 'no_comm']['performance_score'].mean()
-        best_perf = df[df['strategy'] == best_overall]['performance_score'].mean()
-        improvement = ((best_perf - baseline_perf) / baseline_perf) * 100
+        # MODIFIED: Step improvements
+        baseline_steps = df[df['strategy'] == 'no_comm']['steps_to_discovery'].mean()
+        best_steps = df[df['strategy'] == best_overall]['steps_to_discovery'].mean()
+        step_improvement = ((baseline_steps - best_steps) / baseline_steps) * 100
         
         with open(summary_path, 'w') as f:
             f.write("# Executive Summary: Distributed Belief Merging Experiment\n\n")
@@ -1042,20 +1057,20 @@ class AdvancedClusterAnalyzer:
             f.write(f"**Computational Resources:** {df['computation_time'].sum()/3600:.1f} CPU-hours\n\n")
             
             f.write("## Key Findings\n\n")
-            f.write(f"1. **Best Strategy:** `{best_overall}` with {improvement:.1f}% improvement over no communication\n")
-            f.write(f"2. **Worst Strategy:** `{worst_overall}` (baseline comparison)\n")
+            f.write(f"1. **Most Efficient Strategy:** `{best_overall}` with {step_improvement:.1f}% faster discovery than no communication\n")
+            f.write(f"2. **Least Efficient Strategy:** `{worst_overall}` (baseline comparison)\n")
             
             # Pattern-specific insights
             pattern_winners = {}
             for pattern in df['pattern'].unique():
                 pattern_data = df[df['pattern'] == pattern]
-                winner = pattern_data.groupby('strategy')['performance_score'].mean().idxmax()
+                winner = pattern_data.groupby('strategy')['discovery_efficiency'].mean().idxmax()  # MODIFIED
                 pattern_winners[pattern] = winner
             
-            f.write(f"3. **Pattern-Specific Winners:**\n")
+            f.write(f"3. **Pattern-Specific Most Efficient:**\n")
             for pattern, winner in pattern_winners.items():
-                win_score = df[(df['pattern'] == pattern) & (df['strategy'] == winner)]['performance_score'].mean()
-                f.write(f"   - {pattern.capitalize()}: `{winner}` (score: {win_score:.3f})\n")
+                win_efficiency = df[(df['pattern'] == pattern) & (df['strategy'] == winner)]['discovery_efficiency'].mean()
+                f.write(f"   - {pattern.capitalize()}: `{winner}` (efficiency: {win_efficiency:.4f})\n")
             
             # Statistical significance
             if 'strategy_comparisons' in stats_results:
@@ -1072,43 +1087,40 @@ class AdvancedClusterAnalyzer:
             
             f.write("## Performance Summary\n\n")
             
-            # Create performance table
+            # MODIFIED: Create performance table focusing on step metrics
             perf_summary = df.groupby('strategy').agg({
                 'discovery_rate': ['mean', 'std'],
-                'prediction_error': ['mean', 'std'],
-                'final_entropy': ['mean', 'std'],
-                'computation_time': ['mean', 'std']
+                'steps_to_discovery': ['mean', 'std'],
+                'discovery_efficiency': ['mean', 'std'],
+                'communication_overhead': ['mean', 'std']
             }).round(3)
             
-            f.write("| Strategy | Discovery Rate | Prediction Error | Final Entropy | Comp Time (s) |\n")
-            f.write("|----------|----------------|------------------|---------------|---------------|\n")
+            f.write("| Strategy | Discovery Rate | Steps to Discovery | Discovery Efficiency | Comm Overhead |\n")
+            f.write("|----------|----------------|-------------------|---------------------|---------------|\n")
             
             for strategy in perf_summary.index:
                 dr = f"{perf_summary.loc[strategy, ('discovery_rate', 'mean')]:.3f}±{perf_summary.loc[strategy, ('discovery_rate', 'std')]:.3f}"
-                pe = f"{perf_summary.loc[strategy, ('prediction_error', 'mean')]:.2f}±{perf_summary.loc[strategy, ('prediction_error', 'std')]:.2f}"
-                fe = f"{perf_summary.loc[strategy, ('final_entropy', 'mean')]:.3f}±{perf_summary.loc[strategy, ('final_entropy', 'std')]:.3f}"
-                ct = f"{perf_summary.loc[strategy, ('computation_time', 'mean')]:.3f}±{perf_summary.loc[strategy, ('computation_time', 'std')]:.3f}"
+                st = f"{perf_summary.loc[strategy, ('steps_to_discovery', 'mean')]:.0f}±{perf_summary.loc[strategy, ('steps_to_discovery', 'std')]:.0f}"
+                de = f"{perf_summary.loc[strategy, ('discovery_efficiency', 'mean')]:.4f}±{perf_summary.loc[strategy, ('discovery_efficiency', 'std')]:.4f}"
+                co = f"{perf_summary.loc[strategy, ('communication_overhead', 'mean')]:.0f}±{perf_summary.loc[strategy, ('communication_overhead', 'std')]:.0f}"
                 
-                f.write(f"| {strategy} | {dr} | {pe} | {fe} | {ct} |\n")
+                f.write(f"| {strategy} | {dr} | {st} | {de} | {co} |\n")
             
             f.write("\n## 🏆 Recommendations\n\n")
             
-            # Generate specific recommendations
-            high_perf_strategy = df.groupby('strategy')['performance_score'].mean().idxmax()
-            efficient_strategy = (df.groupby('strategy').agg({
-                'performance_score': 'mean',
-                'computation_time': 'mean'
-            }).assign(efficiency=lambda x: x['performance_score']/x['computation_time']))['efficiency'].idxmax()
+            # MODIFIED: Generate step-focused recommendations
+            fastest_strategy = df.groupby('strategy')['steps_to_discovery'].mean().idxmin()
+            most_efficient_strategy = df.groupby('strategy')['discovery_efficiency'].mean().idxmax()
             
-            f.write(f"### For Maximum Performance\n")
-            f.write(f"**Use:** `{high_perf_strategy}`\n")
-            f.write(f"- Achieves highest overall performance score\n")
-            f.write(f"- Best for critical applications where performance is paramount\n\n")
+            f.write(f"### For Fastest Discovery\n")
+            f.write(f"**Use:** `{fastest_strategy}`\n")
+            f.write(f"- Achieves fastest discovery in fewest steps\n")
+            f.write(f"- Best for time-critical applications\n\n")
             
             f.write(f"### For Best Efficiency\n")
-            f.write(f"**Use:** `{efficient_strategy}`\n")
-            f.write(f"- Best performance per computational cost\n")
-            f.write(f"- Ideal for resource-constrained environments\n\n")
+            f.write(f"**Use:** `{most_efficient_strategy}`\n")
+            f.write(f"- Best discovery success per step taken\n")
+            f.write(f"- Ideal for step-constrained environments\n\n")
             
             f.write(f"### Pattern-Specific Recommendations\n")
             for pattern, winner in pattern_winners.items():
@@ -1116,13 +1128,13 @@ class AdvancedClusterAnalyzer:
             
             f.write(f"\n## Scale-Up Insights\n\n")
             
-            # Scalability insights
-            grid_scaling = df.groupby('grid_size')['computation_time'].mean()
-            agent_scaling = df.groupby('n_agents')['computation_time'].mean()
+            # MODIFIED: Step-based scaling insights
+            grid_scaling = df.groupby('grid_size')['steps_to_discovery'].mean()
+            agent_scaling = df.groupby('n_agents')['steps_to_discovery'].mean()
             
-            f.write(f"- **Grid Scaling:** Computation time scales {grid_scaling.iloc[-1]/grid_scaling.iloc[0]:.1f}x from smallest to largest grid\n")
-            f.write(f"- **Agent Scaling:** Computation time scales {agent_scaling.iloc[-1]/agent_scaling.iloc[0]:.1f}x from 2 to 4 agents\n")
-            f.write(f"- **Sweet Spot:** {df.groupby(['grid_key', 'n_agents']).apply(lambda x: x['performance_score'].mean()/x['computation_time'].mean()).idxmax()} for performance/cost ratio\n\n")
+            f.write(f"- **Grid Scaling:** Discovery steps scale {grid_scaling.iloc[-1]/grid_scaling.iloc[0]:.1f}x from smallest to largest grid\n")
+            f.write(f"- **Agent Scaling:** Discovery steps scale {agent_scaling.iloc[-1]/agent_scaling.iloc[0]:.1f}x from 2 to 4 agents\n")
+            f.write(f"- **Communication Sweet Spot:** Balance between frequency and overhead is key\n\n")
             
             f.write("## Statistical Confidence\n\n")
             f.write(f"- All results based on extensive sampling ({total_trials:,} trials)\n")
@@ -1137,8 +1149,8 @@ class AdvancedClusterAnalyzer:
             f.write("- `scalability_analysis.png`: Scaling behavior analysis\n")
             f.write("- `communication_efficiency.png`: Communication strategy analysis\n")
             f.write("- `pattern_deepdive_*.png`: Pattern-specific detailed analysis\n")
-            f.write("- `resource_optimization.png`: Resource optimization recommendations\n")
-            f.write("- `structured_data.csv`: Complete structured dataset\n")
+            f.write("- `resource_optimization.png`: Cost-benefit analysis\n")
+            f.write("- `structured_data.csv`: Complete dataset for further analysis\n")
             f.write("- `advanced_statistics.json`: Detailed statistical results\n")
         
         print(f"Executive summary generated: {summary_path}")
