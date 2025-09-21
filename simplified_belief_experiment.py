@@ -154,7 +154,8 @@ class KLBeliefExperiment:
             'target_prob_truth': [],
             'belief_consensus': [],
             'merge_events': [],
-            'communication_efficiency': []  # Track how much better we get with each merge
+            'communication_efficiency': [],  # Track how much better we get with each merge
+            'full_beliefs': [] 
         }
         
         max_steps = min(len(target_trajectory), 300)
@@ -274,6 +275,15 @@ class KLBeliefExperiment:
         pred_r, pred_c = divmod(predicted_target, self.cols)
         actual_r, actual_c = divmod(actual_target, self.cols)
         prediction_error = np.sqrt((pred_r - actual_r)**2 + (pred_c - actual_c)**2)
+        metrics['full_beliefs'].append({
+            'step': step,
+            'target_position': target_pos,
+            'individual_beliefs': [b.copy() for b in beliefs],
+            'merged_belief': current_merged.copy(),
+            'ground_truth': ground_truth.copy(),
+            'agent_positions': positions.copy(),
+            'observations': [obs_data for obs_data in all_observations if obs_data['timestep'] == step]
+        })
         
         return {
             'merge_interval': merge_interval,
