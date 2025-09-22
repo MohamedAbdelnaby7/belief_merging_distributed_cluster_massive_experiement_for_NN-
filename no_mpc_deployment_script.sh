@@ -159,11 +159,11 @@ EOF
 cat > scripts/run_large.sh << 'EOF'
 #!/bin/bash
 #SBATCH -N 4
-#SBATCH -n 64
+#SBATCH -n 150
 #SBATCH --mem=128G
 #SBATCH -J "BeliefLarge"
 #SBATCH -p long
-#SBATCH -t 24:00:00
+#SBATCH -t 125:00:00
 #SBATCH --output=logs/large_%j.out
 #SBATCH --error=logs/large_%j.err
 

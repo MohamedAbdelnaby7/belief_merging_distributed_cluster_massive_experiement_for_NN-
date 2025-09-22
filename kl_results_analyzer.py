@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Comprehensive KL Performance Analyzer
 Usage: python comprehensive_kl_analysis.py results/consolidated_results_20241219_143022.pkl
@@ -913,46 +912,48 @@ Configurations: {len(stats_df)}"""
                    center=0, ax=ax4, cbar_kws={'shrink': 0.8})
         ax4.set_title('Correlation Matrix')
         
-        # 5. Residual analysis
+        # 5. Residual analysis (simplified without sklearn)
         ax5 = plt.subplot(3, 3, 5)
         
-        # Simple linear model: KL ~ grid_area + n_agents + merge_interval
-        from sklearn.linear_model import LinearRegression
-        from sklearn.preprocessing import LabelEncoder
-        
-        # Prepare features
+        # Simple correlation analysis instead of linear regression
         X = df_numeric[['grid_area_log', 'n_agents', 'merge_interval_inv']].values
         y = df_numeric['avg_kl_to_truth'].values
         
-        # Fit model
-        model = LinearRegression()
-        model.fit(X, y)
-        y_pred = model.predict(X)
-        residuals = y - y_pred
+        # Calculate correlations manually
+        correlations = []
+        feature_names = ['Log Grid Area', 'N Agents', 'Comm Frequency']
         
-        # Plot residuals vs predicted
-        ax5.scatter(y_pred, residuals, alpha=0.6)
-        ax5.axhline(y=0, color='red', linestyle='--')
-        ax5.set_xlabel('Predicted KL Divergence')
-        ax5.set_ylabel('Residuals')
-        ax5.set_title('Residual Analysis\n(Linear Model)')
-        ax5.grid(True, alpha=0.3)
+        for i in range(X.shape[1]):
+            corr = np.corrcoef(X[:, i], y)[0, 1]
+            correlations.append(corr)
         
-        # 6. Feature importance
+        # Plot correlation coefficients
+        bars = ax5.bar(feature_names, correlations, color=['blue', 'green', 'red'], alpha=0.7)
+        ax5.set_ylabel('Correlation with KL Divergence')
+        ax5.set_title('Feature Correlations')
+        ax5.tick_params(axis='x', rotation=45)
+        ax5.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        
+        # Add correlation values on bars
+        for bar, corr in zip(bars, correlations):
+            height = bar.get_height()
+            ax5.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.03),
+                    f'{corr:.3f}', ha='center', va='bottom' if height >= 0 else 'top', fontweight='bold')
+        
+        # 6. Feature importance (simplified)
         ax6 = plt.subplot(3, 3, 6)
         
-        feature_names = ['Log Grid Area', 'N Agents', 'Comm Frequency']
-        importances = np.abs(model.coef_)
+        # Use absolute correlations as feature importance
+        importances = np.abs(correlations)
         
         bars = ax6.bar(feature_names, importances, color=['blue', 'green', 'red'], alpha=0.7)
-        ax6.set_ylabel('Absolute Coefficient')
-        ax6.set_title('Linear Model Feature Importance')
+        ax6.set_ylabel('Absolute Correlation')
+        ax6.set_title('Feature Importance (Correlation-based)')
         ax6.tick_params(axis='x', rotation=45)
         
-        # Add R² score
-        from sklearn.metrics import r2_score
-        r2 = r2_score(y, y_pred)
-        ax6.text(0.7, 0.9, f'R² = {r2:.3f}', transform=ax6.transAxes, 
+        # Add R² equivalent (max correlation squared)
+        max_corr_r2 = max([corr**2 for corr in correlations])
+        ax6.text(0.7, 0.9, f'Max R² ≈ {max_corr_r2:.3f}', transform=ax6.transAxes, 
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
         # 7. Interaction effects
@@ -1032,14 +1033,15 @@ Best Configuration:
   • Interval {int(top_configs.iloc[0]['merge_interval']) if top_configs.iloc[0]['merge_interval'] != float('inf') else '∞'}
   • KL Divergence: {top_configs.iloc[0]['mean']:.4f}
 
-Linear Model Performance:
-  • R² Score: {r2:.3f}
-  • RMSE: {np.sqrt(np.mean(residuals**2)):.4f}
+Correlation Analysis:
+  • Grid Size: {correlations[0]:+.3f}
+  • Agent Count: {correlations[1]:+.3f}
+  • Communication Freq: {correlations[2]:+.3f}
 
 Key Insights:
   • {'Grid size' if grid_effect == max(grid_effect, agent_effect, interval_effect) else 'Agent count' if agent_effect == max(grid_effect, agent_effect, interval_effect) else 'Merge interval'} has strongest effect
-  • {'Positive' if model.coef_[2] > 0 else 'Negative'} correlation with communication frequency
-  • {'Linear' if r2 > 0.7 else 'Nonlinear'} relationship dominates"""
+  • {'Positive' if correlations[2] > 0 else 'Negative'} correlation with communication frequency
+  • Max explained variance: {max(grid_effect, agent_effect, interval_effect):.3f}"""
         
         ax9.text(0.05, 0.95, stats_text, transform=ax9.transAxes, 
                 fontfamily='monospace', fontsize=9, verticalalignment='top',
@@ -1053,6 +1055,1087 @@ Key Insights:
         plt.close()
         
         print(f"Statistical analysis saved: {stats_path}")
+    def extract_time_series_data(self):
+        """Extract and organize time series data from all trials"""
+        time_series_data = {}
+        
+        for _, row in self.df.iterrows():
+            grid = row['grid_size']
+            agents = row['n_agents']
+            interval = row['merge_interval']
+            
+            # Create nested structure: grid -> agents -> interval -> series list
+            if grid not in time_series_data:
+                time_series_data[grid] = {}
+            if agents not in time_series_data[grid]:
+                time_series_data[grid][agents] = {}
+            if interval not in time_series_data[grid][agents]:
+                time_series_data[grid][agents][interval] = {
+                    'kl_series': [],
+                    'target_prob_series': [],
+                    'truth_prob_series': [],
+                    'consensus_series': []
+                }
+            
+            trial = row['trial_data']
+            if 'time_series' in trial:
+                ts = trial['time_series']
+                if ts.get('kl_divergence_to_truth'):
+                    time_series_data[grid][agents][interval]['kl_series'].append(ts['kl_divergence_to_truth'])
+                if ts.get('target_prob_merged'):
+                    time_series_data[grid][agents][interval]['target_prob_series'].append(ts['target_prob_merged'])
+                if ts.get('target_prob_truth'):
+                    time_series_data[grid][agents][interval]['truth_prob_series'].append(ts['target_prob_truth'])
+                if ts.get('belief_consensus'):
+                    time_series_data[grid][agents][interval]['consensus_series'].append(ts['belief_consensus'])
+        
+        return time_series_data
+    
+    def create_kl_evolution_analysis(self):
+        """Create comprehensive KL divergence evolution analysis over time steps"""
+        
+        print("Creating KL evolution analysis...")
+        
+        time_series_data = self.extract_time_series_data()
+        
+        if not time_series_data:
+            print("No time series data available for evolution analysis")
+            return
+        
+        grid_sizes = sorted(time_series_data.keys())
+        agent_numbers = sorted(set(agents for grid_data in time_series_data.values() 
+                                 for agents in grid_data.keys()))
+        merge_intervals = sorted(set(interval for grid_data in time_series_data.values() 
+                                   for agent_data in grid_data.values() 
+                                   for interval in agent_data.keys()))
+        
+        # Create multiple figures for different perspectives
+        
+        # 1. Evolution by Merge Interval (main analysis)
+        self.create_evolution_by_interval(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        
+        # 2. Evolution by Grid Size
+        self.create_evolution_by_grid_size(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        
+        # 3. Evolution by Agent Count
+        self.create_evolution_by_agent_count(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        
+        # 4. Combined Evolution Overview
+        self.create_evolution_overview(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+    
+    def create_evolution_by_interval(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Show KL evolution for each merge interval across all conditions"""
+        
+        n_intervals = len(merge_intervals)
+        fig = plt.figure(figsize=(24, 6 * n_intervals))
+        
+        colors_grid = plt.cm.viridis(np.linspace(0, 1, len(grid_sizes)))
+        colors_agent = plt.cm.plasma(np.linspace(0, 1, len(agent_numbers)))
+        
+        for i, interval in enumerate(merge_intervals):
+            
+            # Plot 1: Average evolution across all configurations
+            ax1 = plt.subplot(n_intervals, 4, i*4 + 1)
+            
+            # Collect all series for this interval
+            all_series = []
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        all_series.extend(series_list)
+            
+            if all_series:
+                # Pad and average all series
+                max_len = max(len(series) for series in all_series)
+                padded_series = []
+                
+                for series in all_series:
+                    if len(series) < max_len:
+                        padded = list(series) + [series[-1]] * (max_len - len(series))
+                    else:
+                        padded = series[:max_len]
+                    padded_series.append(padded)
+                
+                mean_series = np.mean(padded_series, axis=0)
+                std_series = np.std(padded_series, axis=0)
+                steps = range(len(mean_series))
+                
+                ax1.plot(steps, mean_series, 'b-', linewidth=3, label=f'Mean (n={len(all_series)})')
+                ax1.fill_between(steps, mean_series - std_series, mean_series + std_series,
+                                alpha=0.3, color='blue')
+                
+                # Mark merge events
+                if interval != float('inf') and interval > 0:
+                    merge_points = range(int(interval), len(steps), int(interval))
+                    for mp in merge_points[:5]:
+                        ax1.axvline(mp, color='red', alpha=0.5, linestyle='--', linewidth=1)
+                
+                # Calculate and show trend
+                if len(mean_series) > 10:
+                    # Linear trend in second half
+                    half_point = len(mean_series) // 2
+                    y_trend = mean_series[half_point:]
+                    x_trend = np.array(range(len(y_trend)))
+                    if len(y_trend) > 1:
+                        slope, intercept = np.polyfit(x_trend, y_trend, 1)
+                        trend_line = slope * x_trend + intercept
+                        ax1.plot(range(half_point, len(mean_series)), trend_line, 
+                                'r--', linewidth=2, alpha=0.8, label=f'Trend: {slope:+.4f}/step')
+            
+            int_str = f"Interval {int(interval)}" if interval != float('inf') else "No Merge"
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('KL Divergence to Ground Truth')
+            ax1.set_title(f'{int_str}: Overall Evolution')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Evolution by grid size
+            ax2 = plt.subplot(n_intervals, 4, i*4 + 2)
+            
+            for j, grid in enumerate(grid_sizes):
+                grid_series = []
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        grid_series.extend(series_list)
+                
+                if grid_series:
+                    max_len = max(len(series) for series in grid_series)
+                    padded_series = []
+                    
+                    for series in grid_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    ax2.plot(steps, mean_series, color=colors_grid[j], linewidth=2, 
+                            label=f'Grid {grid} (n={len(grid_series)})', alpha=0.8)
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('KL Divergence to Ground Truth')
+            ax2.set_title(f'{int_str}: Evolution by Grid Size')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Evolution by agent count
+            ax3 = plt.subplot(n_intervals, 4, i*4 + 3)
+            
+            for j, agents in enumerate(agent_numbers):
+                agent_series = []
+                for grid in grid_sizes:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        agent_series.extend(series_list)
+                
+                if agent_series:
+                    max_len = max(len(series) for series in agent_series)
+                    padded_series = []
+                    
+                    for series in agent_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    ax3.plot(steps, mean_series, color=colors_agent[j], linewidth=2, 
+                            label=f'{agents} agents (n={len(agent_series)})', alpha=0.8)
+            
+            ax3.set_xlabel('Time Step')
+            ax3.set_ylabel('KL Divergence to Ground Truth')
+            ax3.set_title(f'{int_str}: Evolution by Agent Count')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            # Plot 4: Individual examples and variance
+            ax4 = plt.subplot(n_intervals, 4, i*4 + 4)
+            
+            # Show a few individual trial examples
+            example_count = 0
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents] and
+                        example_count < 5):  # Show max 5 examples
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        if series_list:
+                            series = series_list[0]  # Take first trial as example
+                            ax4.plot(series, alpha=0.3, linewidth=1, color='gray')
+                            example_count += 1
+            
+            # Overlay the mean
+            if all_series:
+                ax4.plot(steps, mean_series, 'b-', linewidth=3, label='Mean', alpha=0.9)
+                
+                # Show variance evolution
+                variance_series = np.var(padded_series, axis=0)
+                ax4_twin = ax4.twinx()
+                ax4_twin.plot(steps, variance_series, 'orange', linewidth=2, alpha=0.7, label='Variance')
+                ax4_twin.set_ylabel('Variance in KL Divergence', color='orange')
+                ax4_twin.tick_params(axis='y', labelcolor='orange')
+            
+            ax4.set_xlabel('Time Step')
+            ax4.set_ylabel('KL Divergence to Ground Truth')
+            ax4.set_title(f'{int_str}: Individual Trials & Variance')
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+        
+        plt.suptitle('KL Divergence Evolution by Merge Interval', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        evolution_interval_path = self.output_dir / 'kl_evolution_by_interval.png'
+        plt.savefig(evolution_interval_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"KL evolution by interval saved: {evolution_interval_path}")
+    
+    def create_evolution_by_grid_size(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Show KL evolution for each grid size across intervals and agents"""
+        
+        n_grids = len(grid_sizes)
+        fig = plt.figure(figsize=(24, 6 * n_grids))
+        
+        colors_interval = plt.cm.viridis(np.linspace(0, 1, len(merge_intervals)))
+        colors_agent = plt.cm.plasma(np.linspace(0, 1, len(agent_numbers)))
+        
+        for i, grid in enumerate(grid_sizes):
+            
+            # Plot 1: All intervals for this grid size
+            ax1 = plt.subplot(n_grids, 4, i*4 + 1)
+            
+            for j, interval in enumerate(merge_intervals):
+                interval_series = []
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        interval_series.extend(series_list)
+                
+                if interval_series:
+                    max_len = max(len(series) for series in interval_series)
+                    padded_series = []
+                    
+                    for series in interval_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    int_str = f"Int {int(interval)}" if interval != float('inf') else "No Merge"
+                    ax1.plot(steps, mean_series, color=colors_interval[j], linewidth=2, 
+                            label=f'{int_str} (n={len(interval_series)})', alpha=0.8)
+                    
+                    # Mark merge events
+                    if interval != float('inf') and interval > 0:
+                        merge_points = range(int(interval), len(steps), int(interval))
+                        for mp in merge_points[:3]:
+                            ax1.axvline(mp, color=colors_interval[j], alpha=0.3, linestyle=':', linewidth=1)
+            
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('KL Divergence to Ground Truth')
+            ax1.set_title(f'Grid {grid}: Evolution by Merge Interval')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: All agent counts for this grid size
+            ax2 = plt.subplot(n_grids, 4, i*4 + 2)
+            
+            for j, agents in enumerate(agent_numbers):
+                agent_series = []
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        agent_series.extend(series_list)
+                
+                if agent_series:
+                    max_len = max(len(series) for series in agent_series)
+                    padded_series = []
+                    
+                    for series in agent_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    ax2.plot(steps, mean_series, color=colors_agent[j], linewidth=2, 
+                            label=f'{agents} agents (n={len(agent_series)})', alpha=0.8)
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('KL Divergence to Ground Truth')
+            ax2.set_title(f'Grid {grid}: Evolution by Agent Count')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Best vs worst configurations
+            ax3 = plt.subplot(n_grids, 4, i*4 + 3)
+            
+            # Find best and worst performing configurations for this grid
+            grid_configs = []
+            for agents in agent_numbers:
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        if series_list:
+                            avg_performance = np.mean([np.mean(series) for series in series_list])
+                            grid_configs.append({
+                                'agents': agents,
+                                'interval': interval,
+                                'performance': avg_performance,
+                                'series_list': series_list
+                            })
+            
+            if grid_configs:
+                # Sort by performance
+                grid_configs.sort(key=lambda x: x['performance'])
+                
+                # Plot best configuration
+                best_config = grid_configs[0]
+                best_series = best_config['series_list']
+                if best_series:
+                    max_len = max(len(series) for series in best_series)
+                    padded_series = []
+                    for series in best_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_best = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_best))
+                    
+                    int_str = f"{int(best_config['interval'])}" if best_config['interval'] != float('inf') else "∞"
+                    ax3.plot(steps, mean_best, 'g-', linewidth=3, 
+                            label=f'Best: {best_config["agents"]}ag, int{int_str}', alpha=0.8)
+                
+                # Plot worst configuration
+                worst_config = grid_configs[-1]
+                worst_series = worst_config['series_list']
+                if worst_series:
+                    max_len = max(len(series) for series in worst_series)
+                    padded_series = []
+                    for series in worst_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_worst = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_worst))
+                    
+                    int_str = f"{int(worst_config['interval'])}" if worst_config['interval'] != float('inf') else "∞"
+                    ax3.plot(steps, mean_worst, 'r-', linewidth=3, 
+                            label=f'Worst: {worst_config["agents"]}ag, int{int_str}', alpha=0.8)
+            
+            ax3.set_xlabel('Time Step')
+            ax3.set_ylabel('KL Divergence to Ground Truth')
+            ax3.set_title(f'Grid {grid}: Best vs Worst Configuration')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            # Plot 4: Convergence analysis
+            ax4 = plt.subplot(n_grids, 4, i*4 + 4)
+            
+            # Calculate convergence rates for each configuration
+            convergence_data = []
+            
+            for agents in agent_numbers:
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        slopes = []
+                        for series in series_list:
+                            if len(series) > 10:
+                                # Calculate slope in second half
+                                half_point = len(series) // 2
+                                y = series[half_point:]
+                                x = range(len(y))
+                                if len(y) > 1:
+                                    slope, _ = np.polyfit(x, y, 1)
+                                    slopes.append(slope)
+                        
+                        if slopes:
+                            mean_slope = np.mean(slopes)
+                            int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                            convergence_data.append({
+                                'config': f'{agents}ag-int{int_str}',
+                                'agents': agents,
+                                'interval': interval,
+                                'slope': mean_slope,
+                                'n_trials': len(slopes)
+                            })
+            
+            if convergence_data:
+                conv_df = pd.DataFrame(convergence_data)
+                
+                # Create bar plot of convergence rates
+                x_pos = range(len(conv_df))
+                colors = ['green' if slope < 0 else 'red' for slope in conv_df['slope']]
+                
+                bars = ax4.bar(x_pos, conv_df['slope'], color=colors, alpha=0.7)
+                ax4.set_xticks(x_pos)
+                ax4.set_xticklabels(conv_df['config'], rotation=45, ha='right')
+                ax4.set_ylabel('Convergence Rate (KL slope)')
+                ax4.set_title(f'Grid {grid}: Convergence Analysis')
+                ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+                ax4.grid(True, alpha=0.3)
+                
+                # Add value labels
+                for bar, slope, n_trials in zip(bars, conv_df['slope'], conv_df['n_trials']):
+                    height = bar.get_height()
+                    ax4.text(bar.get_x() + bar.get_width()/2., 
+                            height + (0.001 if height >= 0 else -0.003),
+                            f'{slope:.4f}\n(n={n_trials})', ha='center', 
+                            va='bottom' if height >= 0 else 'top', fontsize=8)
+        
+        plt.suptitle('KL Divergence Evolution by Grid Size', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        evolution_grid_path = self.output_dir / 'kl_evolution_by_grid_size.png'
+        plt.savefig(evolution_grid_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"KL evolution by grid size saved: {evolution_grid_path}")
+    
+    def create_evolution_by_agent_count(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Show KL evolution for each agent count across grids and intervals"""
+        
+        n_agents = len(agent_numbers)
+        fig = plt.figure(figsize=(24, 6 * n_agents))
+        
+        colors_interval = plt.cm.viridis(np.linspace(0, 1, len(merge_intervals)))
+        colors_grid = plt.cm.plasma(np.linspace(0, 1, len(grid_sizes)))
+        
+        for i, agents in enumerate(agent_numbers):
+            
+            # Plot 1: All intervals for this agent count
+            ax1 = plt.subplot(n_agents, 4, i*4 + 1)
+            
+            for j, interval in enumerate(merge_intervals):
+                interval_series = []
+                for grid in grid_sizes:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        interval_series.extend(series_list)
+                
+                if interval_series:
+                    max_len = max(len(series) for series in interval_series)
+                    padded_series = []
+                    
+                    for series in interval_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    int_str = f"Int {int(interval)}" if interval != float('inf') else "No Merge"
+                    ax1.plot(steps, mean_series, color=colors_interval[j], linewidth=2, 
+                            label=f'{int_str} (n={len(interval_series)})', alpha=0.8)
+            
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('KL Divergence to Ground Truth')
+            ax1.set_title(f'{agents} Agents: Evolution by Merge Interval')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: All grid sizes for this agent count
+            ax2 = plt.subplot(n_agents, 4, i*4 + 2)
+            
+            for j, grid in enumerate(grid_sizes):
+                grid_series = []
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        grid_series.extend(series_list)
+                
+                if grid_series:
+                    max_len = max(len(series) for series in grid_series)
+                    padded_series = []
+                    
+                    for series in grid_series:
+                        if len(series) < max_len:
+                            padded = list(series) + [series[-1]] * (max_len - len(series))
+                        else:
+                            padded = series[:max_len]
+                        padded_series.append(padded)
+                    
+                    mean_series = np.mean(padded_series, axis=0)
+                    steps = range(len(mean_series))
+                    
+                    ax2.plot(steps, mean_series, color=colors_grid[j], linewidth=2, 
+                            label=f'Grid {grid} (n={len(grid_series)})', alpha=0.8)
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('KL Divergence to Ground Truth')
+            ax2.set_title(f'{agents} Agents: Evolution by Grid Size')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Phase analysis (early vs late performance)
+            ax3 = plt.subplot(n_agents, 4, i*4 + 3)
+            
+            # Calculate early vs late performance for each configuration
+            phase_data = []
+            
+            for grid in grid_sizes:
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        early_perfs = []
+                        late_perfs = []
+                        
+                        for series in series_list:
+                            if len(series) > 20:
+                                early_quarter = len(series) // 4
+                                late_quarter = 3 * len(series) // 4
+                                
+                                early_perf = np.mean(series[:early_quarter])
+                                late_perf = np.mean(series[late_quarter:])
+                                
+                                early_perfs.append(early_perf)
+                                late_perfs.append(late_perf)
+                        
+                        if early_perfs and late_perfs:
+                            int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                            phase_data.append({
+                                'config': f'{grid}-int{int_str}',
+                                'early': np.mean(early_perfs),
+                                'late': np.mean(late_perfs),
+                                'improvement': np.mean(early_perfs) - np.mean(late_perfs)
+                            })
+            
+            if phase_data:
+                phase_df = pd.DataFrame(phase_data)
+                
+                # Scatter plot: early vs late performance
+                colors = ['green' if imp > 0 else 'red' for imp in phase_df['improvement']]
+                scatter = ax3.scatter(phase_df['early'], phase_df['late'], 
+                                    c=colors, s=100, alpha=0.7, edgecolors='black')
+                
+                
+                # Add diagonal line (no improvement)
+                min_val = min(phase_df['early'].min(), phase_df['late'].min())
+                max_val = max(phase_df['early'].max(), phase_df['late'].max())
+                ax3.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='No Change')
+                
+                # Add labels for each point
+                for _, row in phase_df.iterrows():
+                    ax3.annotate(row['config'], (row['early'], row['late']), 
+                               xytext=(5, 5), textcoords='offset points', fontsize=8, alpha=0.7)
+                
+                ax3.set_xlabel('Early Performance (First Quarter)')
+                ax3.set_ylabel('Late Performance (Last Quarter)')
+                ax3.set_title(f'{agents} Agents: Early vs Late Performance')
+                ax3.legend()
+                ax3.grid(True, alpha=0.3)
+            
+            # Plot 4: Detailed convergence analysis
+            ax4 = plt.subplot(n_agents, 4, i*4 + 4)
+            
+            # Show convergence patterns for each interval
+            convergence_patterns = {}
+            
+            for interval in merge_intervals:
+                interval_slopes = []
+                for grid in grid_sizes:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for series in series_list:
+                            if len(series) > 10:
+                                # Calculate slope in multiple segments
+                                n_segments = 3
+                                segment_size = len(series) // n_segments
+                                
+                                for seg in range(n_segments):
+                                    start_idx = seg * segment_size
+                                    end_idx = min((seg + 1) * segment_size, len(series))
+                                    
+                                    if end_idx - start_idx > 2:
+                                        y = series[start_idx:end_idx]
+                                        x = range(len(y))
+                                        slope, _ = np.polyfit(x, y, 1)
+                                        interval_slopes.append(slope)
+                
+                if interval_slopes:
+                    convergence_patterns[interval] = interval_slopes
+            
+            # Box plot of convergence rates
+            if convergence_patterns:
+                box_data = []
+                box_labels = []
+                
+                for interval in sorted(convergence_patterns.keys()):
+                    box_data.append(convergence_patterns[interval])
+                    int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                    box_labels.append(f'Int {int_str}')
+                
+                bp = ax4.boxplot(box_data, labels=box_labels, patch_artist=True)
+                
+                # Color boxes by median convergence rate
+                for patch, slopes in zip(bp['boxes'], box_data):
+                    median_slope = np.median(slopes)
+                    color = 'green' if median_slope < 0 else 'red'
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.7)
+                
+                ax4.set_xlabel('Merge Interval')
+                ax4.set_ylabel('Convergence Rate Distribution')
+                ax4.set_title(f'{agents} Agents: Convergence Rate Patterns')
+                ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+                ax4.grid(True, alpha=0.3)
+        
+        plt.suptitle('KL Divergence Evolution by Agent Count', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        evolution_agent_path = self.output_dir / 'kl_evolution_by_agent_count.png'
+        plt.savefig(evolution_agent_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"KL evolution by agent count saved: {evolution_agent_path}")
+    
+    def create_evolution_overview(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Create comprehensive overview of evolution patterns"""
+        
+        fig = plt.figure(figsize=(24, 16))
+        
+        # 1. Global evolution patterns
+        ax1 = plt.subplot(3, 4, 1)
+        
+        # Average across ALL conditions for each interval
+        colors_interval = plt.cm.viridis(np.linspace(0, 1, len(merge_intervals)))
+        
+        for j, interval in enumerate(merge_intervals):
+            all_interval_series = []
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        all_interval_series.extend(series_list)
+            
+            if all_interval_series:
+                max_len = max(len(series) for series in all_interval_series)
+                padded_series = []
+                
+                for series in all_interval_series:
+                    if len(series) < max_len:
+                        padded = list(series) + [series[-1]] * (max_len - len(series))
+                    else:
+                        padded = series[:max_len]
+                    padded_series.append(padded)
+                
+                mean_series = np.mean(padded_series, axis=0)
+                steps = range(len(mean_series))
+                
+                int_str = f"Int {int(interval)}" if interval != float('inf') else "No Merge"
+                ax1.plot(steps, mean_series, color=colors_interval[j], linewidth=3, 
+                        label=f'{int_str} (n={len(all_interval_series)})', alpha=0.9)
+        
+        ax1.set_xlabel('Time Step')
+        ax1.set_ylabel('KL Divergence to Ground Truth')
+        ax1.set_title('Global Evolution Patterns')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Convergence rate heatmap (Grid × Agents)
+        ax2 = plt.subplot(3, 4, 2)
+        
+        convergence_matrix = np.zeros((len(grid_sizes), len(agent_numbers)))
+        
+        for i, grid in enumerate(grid_sizes):
+            for j, agents in enumerate(agent_numbers):
+                all_slopes = []
+                
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for series in series_list:
+                            if len(series) > 10:
+                                half_point = len(series) // 2
+                                y = series[half_point:]
+                                x = range(len(y))
+                                if len(y) > 1:
+                                    slope, _ = np.polyfit(x, y, 1)
+                                    all_slopes.append(slope)
+                
+                if all_slopes:
+                    convergence_matrix[i, j] = np.mean(all_slopes)
+        
+        im = ax2.imshow(convergence_matrix, cmap='RdYlGn_r', aspect='auto')
+        ax2.set_xticks(range(len(agent_numbers)))
+        ax2.set_yticks(range(len(grid_sizes)))
+        ax2.set_xticklabels([f'{agents}ag' for agents in agent_numbers])
+        ax2.set_yticklabels([f'{grid}' for grid in grid_sizes])
+        ax2.set_title('Average Convergence Rate\n(Green=Converging, Red=Diverging)')
+        ax2.set_xlabel('Number of Agents')
+        ax2.set_ylabel('Grid Size')
+        
+        # Add text annotations
+        for i in range(len(grid_sizes)):
+            for j in range(len(agent_numbers)):
+                text = f'{convergence_matrix[i, j]:.3f}'
+                color = 'white' if abs(convergence_matrix[i, j]) > 0.01 else 'black'
+                ax2.text(j, i, text, ha='center', va='center', color=color, fontsize=8)
+        
+        plt.colorbar(im, ax=ax2, shrink=0.8)
+        
+        # 3. Performance improvement over time
+        ax3 = plt.subplot(3, 4, 3)
+        
+        # Calculate relative improvement from initial performance
+        improvement_data = {}
+        
+        for interval in merge_intervals:
+            all_improvements = []
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for series in series_list:
+                            if len(series) > 10:
+                                initial = np.mean(series[:5])  # First 5 steps
+                                final = np.mean(series[-5:])   # Last 5 steps
+                                
+                                if initial > 0:
+                                    improvement = (initial - final) / initial * 100
+                                    all_improvements.append(improvement)
+            
+            if all_improvements:
+                improvement_data[interval] = all_improvements
+        
+        # Box plot of improvements
+        if improvement_data:
+            box_data = []
+            box_labels = []
+            
+            for interval in sorted(improvement_data.keys()):
+                box_data.append(improvement_data[interval])
+                int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                box_labels.append(f'Int {int_str}')
+            
+            bp = ax3.boxplot(box_data, labels=box_labels, patch_artist=True)
+            
+            # Color by median improvement
+            for patch, improvements in zip(bp['boxes'], box_data):
+                median_imp = np.median(improvements)
+                color = 'green' if median_imp > 0 else 'red'
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            
+            ax3.set_xlabel('Merge Interval')
+            ax3.set_ylabel('Performance Improvement (%)')
+            ax3.set_title('Performance Improvement Distribution\n(Initial vs Final)')
+            ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+            ax3.grid(True, alpha=0.3)
+        
+        # 4. Evolution variance analysis
+        ax4 = plt.subplot(3, 4, 4)
+        
+        # Calculate how much variance there is in evolution patterns
+        variance_data = {}
+        
+        for interval in merge_intervals:
+            all_variances = []
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        if len(series_list) > 1:
+                            # Calculate variance at each time step
+                            max_len = max(len(series) for series in series_list)
+                            padded_series = []
+                            
+                            for series in series_list:
+                                if len(series) < max_len:
+                                    padded = list(series) + [series[-1]] * (max_len - len(series))
+                                else:
+                                    padded = series[:max_len]
+                                padded_series.append(padded)
+                            
+                            # Average variance across time
+                            time_variances = np.var(padded_series, axis=0)
+                            avg_variance = np.mean(time_variances)
+                            all_variances.append(avg_variance)
+            
+            if all_variances:
+                variance_data[interval] = np.mean(all_variances)
+        
+        if variance_data:
+            intervals = list(variance_data.keys())
+            variances = list(variance_data.values())
+            
+            colors = [colors_interval[list(merge_intervals).index(interval)] for interval in intervals]
+            bars = ax4.bar(range(len(intervals)), variances, color=colors, alpha=0.7)
+            
+            ax4.set_xticks(range(len(intervals)))
+            ax4.set_xticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in intervals])
+            ax4.set_xlabel('Merge Interval')
+            ax4.set_ylabel('Average Evolution Variance')
+            ax4.set_title('Consistency of Evolution Patterns\n(Lower = More Consistent)')
+            ax4.grid(True, alpha=0.3)
+            
+            # Add value labels
+            for bar, var in zip(bars, variances):
+                ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.001,
+                        f'{var:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # 5-8. Detailed phase analysis
+        phases = ['Early (0-25%)', 'Mid-Early (25-50%)', 'Mid-Late (50-75%)', 'Late (75-100%)']
+        
+        for phase_idx, phase_name in enumerate(phases):
+            ax = plt.subplot(3, 4, 5 + phase_idx)
+            
+            phase_performance = {}
+            
+            for interval in merge_intervals:
+                phase_values = []
+                
+                for grid in grid_sizes:
+                    for agents in agent_numbers:
+                        if (grid in time_series_data and 
+                            agents in time_series_data[grid] and 
+                            interval in time_series_data[grid][agents]):
+                            series_list = time_series_data[grid][agents][interval]['kl_series']
+                            
+                            for series in series_list:
+                                if len(series) > 20:
+                                    quarter_size = len(series) // 4
+                                    start_idx = phase_idx * quarter_size
+                                    end_idx = min((phase_idx + 1) * quarter_size, len(series))
+                                    
+                                    if end_idx > start_idx:
+                                        phase_avg = np.mean(series[start_idx:end_idx])
+                                        phase_values.append(phase_avg)
+                
+                if phase_values:
+                    phase_performance[interval] = np.mean(phase_values)
+            
+            if phase_performance:
+                intervals = list(phase_performance.keys())
+                performances = list(phase_performance.values())
+                
+                colors = [colors_interval[list(merge_intervals).index(interval)] for interval in intervals]
+                bars = ax.bar(range(len(intervals)), performances, color=colors, alpha=0.7)
+                
+                ax.set_xticks(range(len(intervals)))
+                ax.set_xticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in intervals])
+                ax.set_xlabel('Merge Interval')
+                ax.set_ylabel('Average KL Divergence')
+                ax.set_title(f'{phase_name} Performance')
+                ax.grid(True, alpha=0.3)
+                
+                # Add value labels
+                for bar, perf in zip(bars, performances):
+                    ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.01,
+                           f'{perf:.3f}', ha='center', va='bottom', fontsize=8)
+        
+        # 9. Summary statistics table
+        ax9 = plt.subplot(3, 4, 9)
+        ax9.axis('off')
+        
+        # Calculate key statistics
+        summary_stats = []
+        
+        for interval in merge_intervals:
+            all_series = []
+            all_slopes = []
+            all_improvements = []
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for series in series_list:
+                            all_series.append(series)
+                            
+                            if len(series) > 10:
+                                # Slope
+                                half_point = len(series) // 2
+                                y = series[half_point:]
+                                x = range(len(y))
+                                if len(y) > 1:
+                                    slope, _ = np.polyfit(x, y, 1)
+                                    all_slopes.append(slope)
+                                
+                                # Improvement
+                                initial = np.mean(series[:5])
+                                final = np.mean(series[-5:])
+                                if initial > 0:
+                                    improvement = (initial - final) / initial * 100
+                                    all_improvements.append(improvement)
+            
+            if all_series:
+                avg_performance = np.mean([np.mean(series) for series in all_series])
+                avg_slope = np.mean(all_slopes) if all_slopes else 0
+                avg_improvement = np.mean(all_improvements) if all_improvements else 0
+                
+                int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                summary_stats.append([
+                    int_str,
+                    f"{avg_performance:.4f}",
+                    f"{avg_slope:+.4f}",
+                    f"{avg_improvement:+.1f}%",
+                    f"{len(all_series)}"
+                ])
+        
+        if summary_stats:
+            table = ax9.table(
+                cellText=summary_stats,
+                colLabels=['Interval', 'Avg KL', 'Slope', 'Improvement', 'N Trials'],
+                cellLoc='center',
+                loc='center',
+                bbox=[0, 0.2, 1, 0.6]
+            )
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1, 2)
+            
+            # Highlight best performing interval
+            best_row_idx = min(range(len(summary_stats)), 
+                             key=lambda i: float(summary_stats[i][1])) + 1
+            
+            for j in range(len(summary_stats[0])):
+                table[(best_row_idx, j)].set_facecolor('lightgreen')
+                table[(best_row_idx, j)].set_alpha(0.5)
+        
+        ax9.set_title('Evolution Summary Statistics', fontsize=12, fontweight='bold', y=0.9)
+        
+        # 10-12. Best configuration analysis
+        best_configs = []
+        
+        # Find best configuration for each grid size
+        for grid in grid_sizes:
+            grid_configs = []
+            
+            for agents in agent_numbers:
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        if series_list:
+                            avg_performance = np.mean([np.mean(series) for series in series_list])
+                            grid_configs.append({
+                                'grid': grid,
+                                'agents': agents,
+                                'interval': interval,
+                                'performance': avg_performance,
+                                'series_list': series_list
+                            })
+            
+            if grid_configs:
+                best_config = min(grid_configs, key=lambda x: x['performance'])
+                best_configs.append(best_config)
+        
+        # Plot best configuration evolution for each grid
+        for plot_idx, config in enumerate(best_configs):
+            if plot_idx < 3:  # Only plot first 3 grids
+                ax = plt.subplot(3, 4, 10 + plot_idx)
+                
+                series_list = config['series_list']
+                max_len = max(len(series) for series in series_list)
+                padded_series = []
+                
+                for series in series_list:
+                    if len(series) < max_len:
+                        padded = list(series) + [series[-1]] * (max_len - len(series))
+                    else:
+                        padded = series[:max_len]
+                    padded_series.append(padded)
+                
+                mean_series = np.mean(padded_series, axis=0)
+                std_series = np.std(padded_series, axis=0)
+                steps = range(len(mean_series))
+                
+                ax.plot(steps, mean_series, 'b-', linewidth=3, label='Mean')
+                ax.fill_between(steps, mean_series - std_series, mean_series + std_series,
+                               alpha=0.3, color='blue')
+                
+                # Show individual trials as thin lines
+                for series in padded_series[:5]:  # Show max 5 individual trials
+                    ax.plot(steps, series, alpha=0.2, linewidth=1, color='gray')
+                
+                int_str = f"{int(config['interval'])}" if config['interval'] != float('inf') else "∞"
+                ax.set_title(f"Best for Grid {config['grid']}:\n{config['agents']}ag, int{int_str}")
+                ax.set_xlabel('Time Step')
+                ax.set_ylabel('KL Divergence')
+                ax.grid(True, alpha=0.3)
+        
+        plt.suptitle('Comprehensive KL Divergence Evolution Overview', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        evolution_overview_path = self.output_dir / 'kl_evolution_overview.png'
+        plt.savefig(evolution_overview_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"KL evolution overview saved: {evolution_overview_path}")
+
     
     def run_analysis(self):
         """Run complete comprehensive analysis"""
@@ -1065,6 +2148,7 @@ Key Insights:
         
         # Generate all analyses
         self.create_comprehensive_analysis()
+        self.create_kl_evolution_analysis()  # Add this new analysis
         
         print(f"\nComprehensive analysis complete!")
         print(f"Generated files in {self.output_dir}:")
