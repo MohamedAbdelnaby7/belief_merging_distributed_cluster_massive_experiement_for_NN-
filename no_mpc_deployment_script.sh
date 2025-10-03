@@ -52,7 +52,7 @@ cat > configs/test_config.json << 'EOF'
     "beta": 0.2,
     "n_trials": 10,
     "max_steps": 100,
-    "merge_intervals": [1, 10, "inf"],
+    "merge_intervals": [5, 10, "inf"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -67,7 +67,7 @@ cat > configs/standard_config.json << 'EOF'
     "beta": 0.2,
     "n_trials": 50,
     "max_steps": 200,
-    "merge_intervals": [1, 5, 10, "inf"],
+    "merge_intervals": [5, 10, 15, float("inf")],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -82,7 +82,7 @@ cat > configs/large_config.json << 'EOF'
     "beta": 0.2,
     "n_trials": 100,
     "max_steps": 300,
-    "merge_intervals": [1, 5, 10, 15, 25, 50, 100, "inf"],
+    "merge_intervals": [5, 10, 15, 25, 50, 100, "inf"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -163,7 +163,7 @@ cat > scripts/run_large.sh << 'EOF'
 #SBATCH --mem=128G
 #SBATCH -J "BeliefLarge"
 #SBATCH -p long
-#SBATCH -t 125:00:00
+#SBATCH -t 250:00:00
 #SBATCH --output=logs/large_%j.out
 #SBATCH --error=logs/large_%j.err
 

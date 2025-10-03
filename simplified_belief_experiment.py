@@ -147,18 +147,15 @@ class KLBeliefExperiment:
         # Metrics tracking
         metrics = {
             'kl_divergence_to_truth': [],
-            'js_divergence_to_truth': [],
             'entropy_merged': [],
             'entropy_truth': [],
             'target_prob_merged': [],
             'target_prob_truth': [],
-            'belief_consensus': [],
             'merge_events': [],
-            'communication_efficiency': [],  # Track how much better we get with each merge
             'full_beliefs': [] 
         }
         
-        max_steps = min(len(target_trajectory), 300)
+        max_steps = min(len(target_trajectory), 1000)
         
         for step in range(max_steps):
             target_pos = target_trajectory[step]
@@ -207,73 +204,58 @@ class KLBeliefExperiment:
                 
                 beliefs[i] = beliefs[i] * likelihood
                 beliefs[i] = beliefs[i] / (np.sum(beliefs[i]) + 1e-10)
-            
-            # Track KL divergence before potential merge
-            current_merged = self.merge_beliefs_kl(beliefs)
-            kl_before_merge = None
-            
-            # Merge if scheduled
-            if merge_interval > 0 and step > 0 and step % merge_interval == 0:
-                kl_before_merge = self._compute_kl_to_truth(current_merged, all_observations)
-                
-                merged = self.merge_beliefs_kl(beliefs)
-                beliefs = [merged.copy() for _ in range(self.n_agents)]
-                
-                kl_after_merge = self._compute_kl_to_truth(merged, all_observations)
-                
-                metrics['merge_events'].append({
-                    'step': step,
-                    'kl_before': kl_before_merge,
-                    'kl_after': kl_after_merge,
-                    'improvement': kl_before_merge - kl_after_merge,
-                    'entropy_before': entropy(current_merged),
-                    'entropy_after': entropy(merged)
-                })
-                
-                current_merged = merged
+
+            ground_truth = self.compute_ground_truth_belief(all_observations)
+
             
             # Compute ground truth
-            ground_truth = self.compute_ground_truth_belief(all_observations)
+            current_merged = np.mean(beliefs, axis=0)
+
+            # Determine current belief for metrics based on merge strategy
+            if merge_interval == float('inf'):
+                # Never merge - use first agent's belief
+                current_belief = beliefs[0]
+            elif merge_interval == 1:
+                # Always merge - compute and apply merge every step
+                current_belief = self.merge_beliefs_kl(beliefs)
+                beliefs = [current_belief.copy() for _ in range(self.n_agents)]
+            # Merge if scheduled
+            elif merge_interval > 0 and step > 0 and step % merge_interval == 0:
+                pre_merge_avg = np.mean(beliefs, axis=0)  # Average belief before merge
+                merged = self.merge_beliefs_kl(beliefs)
+                beliefs = [merged.copy() for _ in range(self.n_agents)]
+                current_belief = merged
+                
+                # Record merge event
+                metrics['merge_events'].append({
+                    'step': step,
+                    'kl_before': self._compute_kl_to_truth(pre_merge_avg, all_observations),
+                    'kl_after': self._compute_kl_to_truth(merged, all_observations),
+                    'improvement': self._compute_kl_to_truth(pre_merge_avg, all_observations) - 
+                                self._compute_kl_to_truth(merged, all_observations)
+                })
+            else:
+                # Between merges - use average of beliefs (cheap approximation)
+                current_belief = np.mean(beliefs, axis=0)
             
-            # Calculate metrics
+            # Calculate metrics using current_belief
             gt_clipped = np.clip(ground_truth, 1e-10, 1)
-            merged_clipped = np.clip(current_merged, 1e-10, 1)
-            kl_div = np.sum(gt_clipped * np.log(gt_clipped / merged_clipped))
-            metrics['kl_divergence_to_truth'].append(kl_div) #this is the problemtic line, saving it weither it is merging time or not
+            belief_clipped = np.clip(current_belief, 1e-10, 1)
+            kl_div = np.sum(gt_clipped * np.log(gt_clipped / belief_clipped))
             
-            # JS divergence (symmetric)
-            m = 0.5 * (ground_truth + current_merged)
-            js_div = 0.5 * np.sum(ground_truth * np.log(np.clip(ground_truth / m, 1e-10, 1e10))) + \
-                     0.5 * np.sum(current_merged * np.log(np.clip(current_merged / m, 1e-10, 1e10)))
-            metrics['js_divergence_to_truth'].append(js_div)
-            
-            # Entropies
-            metrics['entropy_merged'].append(entropy(current_merged))
+            metrics['kl_divergence_to_truth'].append(kl_div)
+            metrics['entropy_merged'].append(entropy(current_belief))
             metrics['entropy_truth'].append(entropy(ground_truth))
-            
-            # Target probabilities
-            metrics['target_prob_merged'].append(current_merged[target_pos])
+            metrics['target_prob_merged'].append(current_belief[target_pos])
             metrics['target_prob_truth'].append(ground_truth[target_pos])
             
-            # Consensus (correlation between agent beliefs)
-            if len(beliefs) > 1:
-                correlations = []
-                for i in range(len(beliefs)):
-                    for j in range(i+1, len(beliefs)):
-                        corr = np.corrcoef(beliefs[i], beliefs[j])[0, 1]
-                        if not np.isnan(corr):
-                            correlations.append(corr)
-                metrics['belief_consensus'].append(np.mean(correlations) if correlations else 0)
-            else:
-                metrics['belief_consensus'].append(1.0)
             metrics['full_beliefs'].append({
             'step': step,
             'target_position': target_pos,
             'individual_beliefs': [b.copy() for b in beliefs],
-            'merged_belief': current_merged.copy(),
             'ground_truth': ground_truth.copy(),
             'agent_positions': positions.copy(),
-            'observations': [obs_data for obs_data in all_observations if obs_data['timestep'] == step]
+            'observations': [obs_data]
             })
             
         # Final calculations
@@ -292,13 +274,10 @@ class KLBeliefExperiment:
             # Performance metrics
             'avg_kl_to_truth': np.mean(metrics['kl_divergence_to_truth']),
             'final_kl_to_truth': metrics['kl_divergence_to_truth'][-1],
-            'avg_js_to_truth': np.mean(metrics['js_divergence_to_truth']),
-            'final_js_to_truth': metrics['js_divergence_to_truth'][-1],
             'avg_target_prob_merged': np.mean(metrics['target_prob_merged']),
             'avg_target_prob_truth': np.mean(metrics['target_prob_truth']),
             'final_target_prob_merged': metrics['target_prob_merged'][-1],
             'final_target_prob_truth': metrics['target_prob_truth'][-1],
-            'avg_consensus': np.mean(metrics['belief_consensus']),
             'prediction_error': prediction_error,
             'n_merges': len(metrics['merge_events']),
             'communication_efficiency': np.mean([e['improvement'] for e in metrics['merge_events']]) if metrics['merge_events'] else 0,
@@ -673,6 +652,11 @@ def main():
             'target_patterns': ['random'],
             'checkpoint_dir': args.checkpoint_dir
         }
+
+    config['merge_intervals'] = [
+    float('inf') if x == 'inf' else x 
+    for x in config['merge_intervals']
+    ]
     
     print("=" * 80)
     print("KL-DIVERGENCE METHOD vs GROUND TRUTH EXPERIMENT")
