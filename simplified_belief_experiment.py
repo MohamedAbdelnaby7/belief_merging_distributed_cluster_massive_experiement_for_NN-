@@ -53,6 +53,8 @@ class KLBeliefExperiment:
         self.beta = beta   # False negative rate
         self.n_states = grid_size[0] * grid_size[1]
         self.rows, self.cols = grid_size
+        # Add visit counting
+        self.visit_counts = np.zeros((n_agents, self.n_states))
         
     def compute_ground_truth_belief(self, all_observations: List[Dict], 
                                    initial_prior: Optional[np.ndarray] = None) -> np.ndarray:
@@ -127,7 +129,53 @@ class KLBeliefExperiment:
         merged = result.x
         return merged / np.sum(merged)
     
-    def run_trial(self, merge_interval: int, target_trajectory: List[int], trial_seed: int) -> Dict:
+    def merge_beliefs_visit_weighted(self, beliefs: List[np.ndarray], visit_counts: np.ndarray) -> np.ndarray:
+        """Visit-weighted KL-divergence minimization"""
+        if len(beliefs) == 1:
+            return beliefs[0].copy()
+        
+        # Calculate position-specific weights for each agent
+        weights_matrix = np.zeros((len(beliefs), self.n_states))
+        for i in range(len(beliefs)):
+            # Add 1 to avoid division by zero
+            weights_matrix[i] = (visit_counts[i] + 1) / np.sum(visit_counts + len(beliefs))
+        
+        def objective(merged_flat):
+            merged = np.clip(merged_flat, 1e-10, 1)
+            merged = merged / np.sum(merged)
+            
+            total_div = 0
+            for i, belief in enumerate(beliefs):
+                belief_clip = np.clip(belief, 1e-10, 1)
+                # Position-specific weighted KL divergence
+                kl_per_state = belief_clip * np.log(belief_clip / merged)
+                weighted_kl = np.sum(weights_matrix[i] * kl_per_state)
+                total_div += weighted_kl
+            
+            return total_div
+        
+        # Initial guess: weighted average based on visit counts
+        initial = np.average(beliefs, axis=0, weights=np.sum(visit_counts + 1, axis=1))
+        initial = initial / np.sum(initial)
+        
+        # Same optimization as before
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = [(1e-10, 1) for _ in range(self.n_states)]
+        
+        result = minimize(
+            objective,
+            initial.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 100, 'ftol': 1e-8}
+        )
+        
+        merged = result.x
+        return merged / np.sum(merged)
+    
+    def run_trial(self, merge_interval: int, target_trajectory: List[int], trial_seed: int,
+                  merge_method: str = 'standard_kl') -> Dict:
         """Run a single trial with KL method at specified merge interval"""
         np.random.seed(trial_seed)
         
@@ -156,6 +204,9 @@ class KLBeliefExperiment:
         }
         
         max_steps = min(len(target_trajectory), 1000)
+
+        # Initialize visit counts for visit-weighted method
+        visit_counts = np.zeros((self.n_agents, self.n_states))
         
         for step in range(max_steps):
             target_pos = target_trajectory[step]
@@ -163,6 +214,7 @@ class KLBeliefExperiment:
             # Simple agent movement (random walk)
             new_positions = []
             for i, pos in enumerate(positions):
+                visit_counts[i, pos] += 1
                 r, c = divmod(pos, self.cols)
                 
                 # Random movement
@@ -222,7 +274,12 @@ class KLBeliefExperiment:
             # Merge if scheduled
             elif merge_interval > 0 and step > 0 and step % merge_interval == 0:
                 pre_merge_avg = np.mean(beliefs, axis=0)  # Average belief before merge
-                merged = self.merge_beliefs_kl(beliefs)
+
+                if merge_method == 'visit_weighted':
+                    merged = self.merge_beliefs_visit_weighted(beliefs, visit_counts)
+                else:  # standard_kl
+                    merged = self.merge_beliefs_kl(beliefs)
+
                 beliefs = [merged.copy() for _ in range(self.n_agents)]
                 current_belief = merged
                 
@@ -269,6 +326,7 @@ class KLBeliefExperiment:
         
         return {
             'merge_interval': merge_interval,
+            'merge_method': merge_method,
             'trial_seed': trial_seed,
             
             # Performance metrics
@@ -374,16 +432,18 @@ class DistributedExperimentManager:
                         trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                         
                         for merge_interval in self.config['merge_intervals']:
-                            task = {
-                                'grid_size': grid_size,
-                                'n_agents': n_agents,
-                                'pattern': pattern,
-                                'trial_id': trial_id,
-                                'merge_interval': merge_interval,
-                                'trial_seed': trial_seed,
-                                'config': self.config
-                            }
-                            tasks.append(task)
+                            for merge_method in ['standard_kl', 'visit_weighted']:
+                                task = {
+                                    'grid_size': grid_size,
+                                    'n_agents': n_agents,
+                                    'pattern': pattern,
+                                    'trial_id': trial_id,
+                                    'merge_interval': merge_interval,
+                                    'merge_method': merge_method,
+                                    'trial_seed': trial_seed,
+                                    'config': self.config
+                                }
+                                tasks.append(task)
         
         print(f"Generated {len(tasks)} total tasks (KL method only)")
         return tasks
@@ -392,9 +452,10 @@ class DistributedExperimentManager:
         """Get checkpoint file path for task"""
         grid_str = f"{task['grid_size'][0]}x{task['grid_size'][1]}"
         interval_str = 'inf' if task['merge_interval'] == float('inf') else str(task['merge_interval'])
+        method_str = task.get('merge_method', 'standard_kl')  # Default to standard if not specified
         filename = (f"grid{grid_str}_agents{task['n_agents']}_{task['pattern']}_"
-                   f"trial{task['trial_id']}_interval{interval_str}_"
-                   f"kl_method_seed{task['trial_seed']}.pkl")
+                f"trial{task['trial_id']}_interval{interval_str}_"
+                f"{method_str}_seed{task['trial_seed']}.pkl")  # ADD method to filename
         return str(self.checkpoint_dir / filename)
     
     def filter_incomplete_tasks(self, tasks: List[Dict]) -> List[Dict]:
@@ -494,50 +555,87 @@ class DistributedExperimentManager:
                     pattern_results = {}
                     
                     for merge_interval in self.config['merge_intervals']:
-                        interval_results = {'kl_divergence': []}
+                        # Store by interval key, then by method
+                        if merge_interval == 1:
+                            interval_key = 'immediate_merge'
+                        elif merge_interval == float('inf'):
+                            interval_key = 'no_merge'
+                        else:
+                            interval_key = f'interval_{merge_interval}'
+                        
+                        # Initialize dict for both methods
+                        pattern_results[interval_key] = {
+                            'standard_kl': [],
+                            'visit_weighted': []
+                        }
                         
                         for trial_id in range(self.config['n_trials']):
                             trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                             
-                            task = {
-                                'grid_size': grid_size,
-                                'n_agents': n_agents,
-                                'pattern': pattern,
-                                'trial_id': trial_id,
-                                'merge_interval': merge_interval,
-                                'trial_seed': trial_seed
-                            }
-                            
-                            checkpoint_path = self.get_checkpoint_path(task)
-                            
-                            if os.path.exists(checkpoint_path):
-                                try:
-                                    with open(checkpoint_path, 'rb') as f:
-                                        result = pickle.load(f)
-                                    interval_results['kl_divergence'].append(result)
-                                except Exception as e:
-                                    print(f"Failed to load {checkpoint_path}: {e}")
-                        
-                        # Store results with proper key naming
-                        if merge_interval == 1:
-                            key = 'immediate_merge'
-                        elif merge_interval == float('inf'):
-                            key = 'no_merge'
-                        else:
-                            key = f'interval_{merge_interval}'
-                        
-                        pattern_results[key] = interval_results
+                            # Load both methods
+                            for merge_method in ['standard_kl', 'visit_weighted']:
+                                task = {
+                                    'grid_size': grid_size,
+                                    'n_agents': n_agents,
+                                    'pattern': pattern,
+                                    'trial_id': trial_id,
+                                    'merge_interval': merge_interval,
+                                    'merge_method': merge_method,
+                                    'trial_seed': trial_seed
+                                }
+                                
+                                checkpoint_path = self.get_checkpoint_path(task)
+                                
+                                if os.path.exists(checkpoint_path):
+                                    try:
+                                        with open(checkpoint_path, 'rb') as f:
+                                            result = pickle.load(f)
+                                        pattern_results[interval_key][merge_method].append(result)
+                                    except Exception as e:
+                                        print(f"Failed to load {checkpoint_path}: {e}")
                     
                     all_results[grid_key][agent_key][pattern] = pattern_results
         
-        # Save consolidated results
+        # Save consolidated results - separate files for each method
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        consolidated_path = self.results_dir / f"kl_focused_results_{timestamp}.pkl"
+        
+        # Save combined file
+        consolidated_path = self.results_dir / f"kl_both_methods_{timestamp}.pkl"
         with open(consolidated_path, 'wb') as f:
             pickle.dump(all_results, f)
+        print(f"Combined results saved to {consolidated_path}")
         
-        print(f"Results saved to {consolidated_path}")   
+        # Also save separate files for each method
+        for method in ['standard_kl', 'visit_weighted']:
+            method_results = self._extract_method_results(all_results, method)
+            method_path = self.results_dir / f"kl_{method}_{timestamp}.pkl"
+            with open(method_path, 'wb') as f:
+                pickle.dump(method_results, f)
+            print(f"{method} results saved to {method_path}")
+        
         return all_results
+    
+    def _extract_method_results(self, all_results: Dict, method: str) -> Dict:
+        """Extract results for a single method"""
+        method_results = {}
+        
+        for grid_key, grid_data in all_results.items():
+            method_results[grid_key] = {}
+            
+            for agent_key, agent_data in grid_data.items():
+                method_results[grid_key][agent_key] = {}
+                
+                for pattern, pattern_data in agent_data.items():
+                    method_results[grid_key][agent_key][pattern] = {}
+                    
+                    for interval_key, interval_data in pattern_data.items():
+                        if method in interval_data:
+                            # Store in format compatible with old visualization code
+                            method_results[grid_key][agent_key][pattern][interval_key] = {
+                                'kl_divergence': interval_data[method]
+                            }
+        
+        return method_results
     
     def _count_total_trials(self, results: Dict) -> int:
         """Count total number of trials in results"""
@@ -591,7 +689,8 @@ def run_single_kl_task(task: Dict) -> Optional[Dict]:
         
         # Run the trial
         result = experiment.run_trial(
-            task['merge_interval'], trajectory, task['trial_seed']
+            task['merge_interval'], trajectory, task['trial_seed'], 
+            task.get('merge_method', 'standard_kl')  # ADD method parameter
         )
         
         # Add metadata
@@ -621,9 +720,10 @@ def get_kl_checkpoint_filename(task: Dict) -> str:
     """Generate checkpoint filename for KL task"""
     grid_str = f"{task['grid_size'][0]}x{task['grid_size'][1]}"
     interval_str = str(task['merge_interval']) if task['merge_interval'] != float('inf') else 'inf'
+    method_str = task.get('merge_method', 'standard_kl')  # ADD THIS
     return (f"grid{grid_str}_agents{task['n_agents']}_{task['pattern']}_"
             f"trial{task['trial_id']}_interval{interval_str}_"
-            f"kl_method_seed{task['trial_seed']}.pkl")
+            f"{method_str}_seed{task['trial_seed']}.pkl")  # ADD method_str here
 
 
 def main():
