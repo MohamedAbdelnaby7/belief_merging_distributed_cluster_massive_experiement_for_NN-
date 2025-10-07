@@ -173,6 +173,86 @@ class KLBeliefExperiment:
         
         merged = result.x
         return merged / np.sum(merged)
+    def merge_beliefs_observation_weighted(self, beliefs: List[np.ndarray], 
+                                    observation_counts: np.ndarray) -> np.ndarray:
+        """Weight by actual observations (detections) at each position"""
+        if len(beliefs) == 1:
+            return beliefs[0].copy()
+        
+        # Calculate weights based on positive observations
+        total_obs = np.sum(observation_counts) + len(beliefs)  # Add small constant
+        weights = (np.sum(observation_counts, axis=1) + 1) / total_obs
+        
+        def objective(merged_flat):
+            merged = np.clip(merged_flat, 1e-10, 1)
+            merged = merged / np.sum(merged)
+            
+            total_div = 0
+            for i, belief in enumerate(beliefs):
+                belief_clip = np.clip(belief, 1e-10, 1)
+                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                total_div += weights[i] * kl
+            
+            return total_div
+        
+        initial = np.average(beliefs, axis=0, weights=weights)
+        initial = initial / np.sum(initial)
+        
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = [(1e-10, 1) for _ in range(self.n_states)]
+        
+        result = minimize(
+            objective,
+            initial.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 100, 'ftol': 1e-8}
+        )
+        
+        merged = result.x
+        return merged / np.sum(merged)
+
+    def merge_beliefs_entropy_weighted(self, beliefs: List[np.ndarray]) -> np.ndarray:
+        """Weight by inverse entropy (more certain beliefs get higher weight)"""
+        if len(beliefs) == 1:
+            return beliefs[0].copy()
+        
+        # Calculate entropy-based weights
+        entropies = np.array([entropy(belief) for belief in beliefs])
+        # Inverse entropy weighting (lower entropy = higher weight)
+        weights = 1.0 / (1.0 + entropies)
+        weights = weights / np.sum(weights)
+        
+        def objective(merged_flat):
+            merged = np.clip(merged_flat, 1e-10, 1)
+            merged = merged / np.sum(merged)
+            
+            total_div = 0
+            for i, belief in enumerate(beliefs):
+                belief_clip = np.clip(belief, 1e-10, 1)
+                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                total_div += weights[i] * kl
+            
+            return total_div
+        
+        initial = np.average(beliefs, axis=0, weights=weights)
+        initial = initial / np.sum(initial)
+        
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = [(1e-10, 1) for _ in range(self.n_states)]
+        
+        result = minimize(
+            objective,
+            initial.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 100, 'ftol': 1e-8}
+        )
+        
+        merged = result.x
+        return merged / np.sum(merged)
     
     def run_trial(self, merge_interval: int, target_trajectory: List[int], trial_seed: int,
                   merge_method: str = 'standard_kl') -> Dict:
@@ -207,6 +287,8 @@ class KLBeliefExperiment:
 
         # Initialize visit counts for visit-weighted method
         visit_counts = np.zeros((self.n_agents, self.n_states))
+        observation_counts = np.zeros((self.n_agents, self.n_states))  # Track positive observations
+        recent_predictions = [[] for _ in range(self.n_agents)]  # Track recent accuracy
         
         for step in range(max_steps):
             target_pos = target_trajectory[step]
@@ -236,6 +318,10 @@ class KLBeliefExperiment:
                     obs = 1 if np.random.random() > self.beta else 0
                 else:
                     obs = 1 if np.random.random() < self.alpha else 0
+
+                # Track positive observations for observation weighting
+                if obs == 1:
+                    observation_counts[i, pos] += 1
                 
                 obs_data = {
                     'timestep': step,
@@ -275,11 +361,18 @@ class KLBeliefExperiment:
             elif merge_interval > 0 and step > 0 and step % merge_interval == 0:
                 pre_merge_avg = np.mean(beliefs, axis=0)  # Average belief before merge
 
-                if merge_method == 'visit_weighted':
-                    merged = self.merge_beliefs_visit_weighted(beliefs, visit_counts)
-                else:  # standard_kl
+                # Choose merge method
+                if merge_method == 'standard_kl':
                     merged = self.merge_beliefs_kl(beliefs)
-
+                elif merge_method == 'visit_weighted':
+                    merged = self.merge_beliefs_visit_weighted(beliefs, visit_counts)
+                elif merge_method == 'observation_weighted':
+                    merged = self.merge_beliefs_observation_weighted(beliefs, observation_counts)
+                elif merge_method == 'entropy_weighted':
+                    merged = self.merge_beliefs_entropy_weighted(beliefs)
+                else:
+                    raise ValueError(f"Unknown merge method: {merge_method}")
+                
                 beliefs = [merged.copy() for _ in range(self.n_agents)]
                 current_belief = merged
                 
@@ -422,8 +515,11 @@ class DistributedExperimentManager:
         print(f"Experiment manager initialized with {self.max_workers} workers")
     
     def generate_all_tasks(self) -> List[Dict]:
-        """Generate all trial tasks - focusing only on KL method"""
+        """Generate all trial tasks for all methods"""
         tasks = []
+        
+        # All methods to test
+        merge_methods = self.config['merge_methods']
         
         for grid_size in self.config['grid_sizes']:
             for n_agents in self.config['n_agents_list']:
@@ -432,7 +528,7 @@ class DistributedExperimentManager:
                         trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                         
                         for merge_interval in self.config['merge_intervals']:
-                            for merge_method in ['standard_kl', 'visit_weighted']:
+                            for merge_method in merge_methods:
                                 task = {
                                     'grid_size': grid_size,
                                     'n_agents': n_agents,
@@ -445,7 +541,7 @@ class DistributedExperimentManager:
                                 }
                                 tasks.append(task)
         
-        print(f"Generated {len(tasks)} total tasks (KL method only)")
+        print(f"Generated {len(tasks)} total tasks ({len(merge_methods)} methods)")
         return tasks
     
     def get_checkpoint_path(self, task: Dict) -> str:
@@ -564,16 +660,13 @@ class DistributedExperimentManager:
                             interval_key = f'interval_{merge_interval}'
                         
                         # Initialize dict for both methods
-                        pattern_results[interval_key] = {
-                            'standard_kl': [],
-                            'visit_weighted': []
-                        }
+                        pattern_results[interval_key] = {method: [] for method in self.config['merge_methods']}
                         
                         for trial_id in range(self.config['n_trials']):
                             trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                             
-                            # Load both methods
-                            for merge_method in ['standard_kl', 'visit_weighted']:
+                            # Load all methods
+                            for merge_method in self.config['merge_methods']:
                                 task = {
                                     'grid_size': grid_size,
                                     'n_agents': n_agents,
@@ -600,13 +693,13 @@ class DistributedExperimentManager:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
         # Save combined file
-        consolidated_path = self.results_dir / f"kl_both_methods_{timestamp}.pkl"
+        consolidated_path = self.results_dir / f"kl_all_methods_{timestamp}.pkl"
         with open(consolidated_path, 'wb') as f:
             pickle.dump(all_results, f)
         print(f"Combined results saved to {consolidated_path}")
         
         # Also save separate files for each method
-        for method in ['standard_kl', 'visit_weighted']:
+        for method in self.config['merge_methods']:
             method_results = self._extract_method_results(all_results, method)
             method_path = self.results_dir / f"kl_{method}_{timestamp}.pkl"
             with open(method_path, 'wb') as f:
