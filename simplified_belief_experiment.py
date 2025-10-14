@@ -253,6 +253,85 @@ class KLBeliefExperiment:
         
         merged = result.x
         return merged / np.sum(merged)
+
+    def merge_beliefs_confidence_weighted(self, beliefs: List[np.ndarray], 
+                                     lambda_penalty: float = 0.1,
+                                     eta_threshold: float = 0.3) -> np.ndarray:
+    """Confidence-weighted KL with penalty for high-entropy states"""
+        if len(beliefs) == 1:
+            return beliefs[0].copy()
+        
+        # Equal weights for base KL
+        weights = np.ones(len(beliefs)) / len(beliefs)
+        
+        def objective(merged_flat):
+            merged = np.clip(merged_flat, 1e-10, 1)
+            merged = merged / np.sum(merged)
+            
+            # Standard KL divergence term
+            kl_term = 0
+            for i, belief in enumerate(beliefs):
+                belief_clip = np.clip(belief, 1e-10, 1)
+                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                kl_term += weights[i] * kl
+            
+            # Confidence penalty term
+            confidence_penalty = 0
+            for j in range(self.n_states):
+                if merged[j] > eta_threshold:
+                    # Penalize disagreement on high-confidence states
+                    variance = np.sum([(beliefs[i][j] - merged[j])**2 for i in range(len(beliefs))])
+                    confidence_penalty += variance
+            
+            return kl_term + lambda_penalty * confidence_penalty
+        
+        # Initial guess
+        initial = np.mean(beliefs, axis=0)
+        initial = initial / np.sum(initial)
+        
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = [(1e-10, 1) for _ in range(self.n_states)]
+        
+        result = minimize(
+            objective,
+            initial.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 100, 'ftol': 1e-8}
+        )
+        
+        merged = result.x
+        return merged / np.sum(merged)
+
+    def tune_confidence_hyperparameters(self, beliefs_sample: List[np.ndarray], 
+                                   ground_truth_sample: np.ndarray) -> Tuple[float, float]:
+    """Find optimal lambda and eta for confidence-weighted merge"""
+        from scipy.optimize import differential_evolution
+        
+        def evaluate_params(params):
+            lambda_val, eta_val = params
+            merged = self.merge_beliefs_confidence_weighted(
+                beliefs_sample, lambda_val, eta_val
+            )
+            # Compute KL from merged to ground truth
+            gt_clip = np.clip(ground_truth_sample, 1e-10, 1)
+            merged_clip = np.clip(merged, 1e-10, 1)
+            kl = np.sum(gt_clip * np.log(gt_clip / merged_clip))
+            return kl
+        
+        # Search bounds
+        bounds = [(0.01, 1.0), (0.1, 0.5)]  # lambda, eta
+        
+        result = differential_evolution(
+            evaluate_params,
+            bounds,
+            maxiter=50,
+            popsize=10,
+            seed=42
+        )
+        
+        return result.x[0], result.x[1]  # optimal lambda, eta
     
     def run_trial(self, merge_interval: int, target_trajectory: List[int], trial_seed: int,
                   merge_method: str = 'standard_kl') -> Dict:
@@ -289,7 +368,11 @@ class KLBeliefExperiment:
         visit_counts = np.zeros((self.n_agents, self.n_states))
         observation_counts = np.zeros((self.n_agents, self.n_states))  # Track positive observations
         recent_predictions = [[] for _ in range(self.n_agents)]  # Track recent accuracy
-        
+        # Hyperparameters for confidence-weighted
+        optimal_lambda = 0.1  # Default
+        optimal_eta = 0.3     # Default
+        hyperparams_tuned = False
+
         for step in range(max_steps):
             target_pos = target_trajectory[step]
             
@@ -370,6 +453,16 @@ class KLBeliefExperiment:
                     merged = self.merge_beliefs_observation_weighted(beliefs, observation_counts)
                 elif merge_method == 'entropy_weighted':
                     merged = self.merge_beliefs_entropy_weighted(beliefs)
+                elif merge_method == 'confidence_weighted':
+                    # Tune hyperparameters on first merge
+                    if not hyperparams_tuned and step >= 20:  # Need some data first
+                        optimal_lambda, optimal_eta = self.tune_confidence_hyperparameters(
+                            beliefs, ground_truth
+                        )
+                        hyperparams_tuned = True
+                    merged = self.merge_beliefs_confidence_weighted(
+                        beliefs, optimal_lambda, optimal_eta
+                    )
                 else:
                     raise ValueError(f"Unknown merge method: {merge_method}")
                 
