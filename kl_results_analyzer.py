@@ -46,75 +46,117 @@ class ComprehensiveKLAnalyzer:
             raise ValueError(f"Could not load results file: {e}")
     
     def flatten_to_dataframe(self) -> pd.DataFrame:
-        """Convert nested results to flat DataFrame"""
+        """Convert nested results to flat DataFrame - FIXED VERSION FOR ALL METHODS"""
         data_rows = []
+        
+        print("\n[DEBUG] Flattening results to DataFrame...")
         
         for grid_key, grid_results in self.results.items():
             for agent_key, agent_results in grid_results.items():
                 try:
                     n_agents = int(agent_key.split('_')[0])
                 except (ValueError, IndexError):
+                    print(f"[WARNING] Could not parse agent number from {agent_key}")
                     continue
                     
                 for pattern, pattern_results in agent_results.items():
                     for interval_key, interval_data in pattern_results.items():
                         
-                        # Handle both old format (multiple strategies) and new format (KL only)
-                        if isinstance(interval_data, dict):
-                            if 'kl_divergence' in interval_data:
-                                trials = interval_data['kl_divergence']
-                            elif 'avg_kl_to_truth' in interval_data:  # Single trial format
-                                trials = [interval_data]
-                            else:
-                                # Try to find any list of trials
-                                for key, value in interval_data.items():
-                                    if isinstance(value, list) and value:
-                                        trials = value
-                                        break
-                                else:
-                                    continue
-                        elif isinstance(interval_data, list):
-                            trials = interval_data
+                        # Parse merge interval
+                        if interval_key == 'immediate_merge' or interval_key == 'interval_1':
+                            merge_interval = 1
+                        elif interval_key == 'no_merge':
+                            merge_interval = float('inf')
+                        elif interval_key.startswith('interval_'):
+                            try:
+                                merge_interval = int(interval_key.split('_')[1])
+                            except:
+                                merge_interval = float('inf')
                         else:
-                            continue
+                            # Try to extract number
+                            try:
+                                merge_interval = float(interval_key)
+                            except:
+                                merge_interval = float('inf')
                         
-                        for trial in trials:
-                            if isinstance(trial, dict) and 'avg_kl_to_truth' in trial:
-                                # Parse merge interval from trial or interval_key
-                                merge_interval = trial.get('merge_interval')
-                                if merge_interval is None:
-                                    if interval_key == 'immediate_merge':
-                                        merge_interval = 1
-                                    elif interval_key == 'no_merge':
-                                        merge_interval = float('inf')
-                                    elif interval_key.startswith('interval_'):
-                                        try:
-                                            merge_interval = int(interval_key.split('_')[1])
-                                        except:
-                                            merge_interval = float('inf')
-                                    else:
-                                        merge_interval = float('inf')
+                        # Handle different data structures
+                        # CASE 1: Dict with method names as keys (NEW FORMAT - 5 methods)
+                        if isinstance(interval_data, dict):
+                            for method_name, trials in interval_data.items():
+                                if not isinstance(trials, list):
+                                    continue
+                                    
+                                for trial in trials:
+                                    if not isinstance(trial, dict):
+                                        continue
+                                    
+                                    # Extract merge method (use trial's method or dict key)
+                                    merge_method = trial.get('merge_method', method_name)
+                                    
+                                    # Parse grid size
+                                    try:
+                                        if 'x' in grid_key:
+                                            rows, cols = map(int, grid_key.split('x'))
+                                            grid_area = rows * cols
+                                        else:
+                                            grid_area = 100
+                                            rows = cols = 10
+                                    except:
+                                        grid_area = 100
+                                        rows = cols = 10
+                                    
+                                    data_rows.append({
+                                        'grid_size': grid_key,
+                                        'grid_area': grid_area,
+                                        'grid_rows': rows,
+                                        'grid_cols': cols,
+                                        'n_agents': n_agents,
+                                        'pattern': pattern,
+                                        'interval_strategy': interval_key,
+                                        'merge_interval': merge_interval,
+                                        'merge_method': merge_method,
+                                        'avg_kl_to_truth': trial.get('avg_kl_to_truth', np.nan),
+                                        'final_kl_to_truth': trial.get('final_kl_to_truth', np.nan),
+                                        'avg_target_prob_merged': trial.get('avg_target_prob_merged', np.nan),
+                                        'avg_target_prob_truth': trial.get('avg_target_prob_truth', np.nan),
+                                        'final_target_prob_merged': trial.get('final_target_prob_merged', np.nan),
+                                        'final_target_prob_truth': trial.get('final_target_prob_truth', np.nan),
+                                        'prediction_error': trial.get('prediction_error', np.nan),
+                                        'avg_consensus': trial.get('avg_consensus', np.nan),
+                                        'n_merges': trial.get('n_merges', 0),
+                                        'communication_efficiency': trial.get('communication_efficiency', 0),
+                                        'trial_data': trial  # Keep full trial for detailed analysis
+                                    })
+                        
+                        # CASE 2: List of trials (OLD FORMAT - single method)
+                        elif isinstance(interval_data, list):
+                            for trial in interval_data:
+                                if not isinstance(trial, dict):
+                                    continue
                                 
-                                # Parse grid size
-                                grid_size_str = grid_key
+                                merge_method = trial.get('merge_method', 'unknown')
+                                
                                 try:
-                                    if 'x' in grid_size_str:
-                                        rows, cols = map(int, grid_size_str.split('x'))
+                                    if 'x' in grid_key:
+                                        rows, cols = map(int, grid_key.split('x'))
                                         grid_area = rows * cols
                                     else:
-                                        grid_area = int(grid_size_str)
+                                        grid_area = 100
+                                        rows = cols = 10
                                 except:
-                                    grid_area = 100  # default
+                                    grid_area = 100
+                                    rows = cols = 10
                                 
                                 data_rows.append({
                                     'grid_size': grid_key,
                                     'grid_area': grid_area,
-                                    'grid_rows': rows if 'x' in grid_size_str else int(np.sqrt(grid_area)),
-                                    'grid_cols': cols if 'x' in grid_size_str else int(np.sqrt(grid_area)),
+                                    'grid_rows': rows,
+                                    'grid_cols': cols,
                                     'n_agents': n_agents,
                                     'pattern': pattern,
                                     'interval_strategy': interval_key,
                                     'merge_interval': merge_interval,
+                                    'merge_method': merge_method,
                                     'avg_kl_to_truth': trial.get('avg_kl_to_truth', np.nan),
                                     'final_kl_to_truth': trial.get('final_kl_to_truth', np.nan),
                                     'avg_target_prob_merged': trial.get('avg_target_prob_merged', np.nan),
@@ -125,15 +167,29 @@ class ComprehensiveKLAnalyzer:
                                     'avg_consensus': trial.get('avg_consensus', np.nan),
                                     'n_merges': trial.get('n_merges', 0),
                                     'communication_efficiency': trial.get('communication_efficiency', 0),
-                                    'trial_data': trial  # Keep reference to full trial data
+                                    'trial_data': trial
                                 })
         
         if not data_rows:
-            print("ERROR: No valid data found in results file!")
+            print("[ERROR] No valid data found in results file!")
             return pd.DataFrame()
         
         df = pd.DataFrame(data_rows)
         df = df.dropna(subset=['avg_kl_to_truth'])
+        
+        # Print summary
+        print(f"[DEBUG] Flattened {len(df)} trials")
+        print(f"[DEBUG] Merge methods found: {sorted(df['merge_method'].unique())}")
+        print(f"[DEBUG] Merge intervals: {sorted(df['merge_interval'].unique())}")
+        print(f"[DEBUG] Grid sizes: {sorted(df['grid_size'].unique())}")
+        print(f"[DEBUG] Agent numbers: {sorted(df['n_agents'].unique())}")
+        
+        # Count by method
+        print(f"\n[DEBUG] Trials per method:")
+        for method in sorted(df['merge_method'].unique()):
+            count = len(df[df['merge_method'] == method])
+            print(f"  {method}: {count} trials")
+        
         return df
     
     def print_data_summary(self):
@@ -303,18 +359,18 @@ class ComprehensiveKLAnalyzer:
                 
                 summary_text = f"""GRID {grid} SUMMARY
                 
-Best Configuration:
-  • {best_config['agents']} agents, interval {best_config['interval']}
-  • KL Divergence: {best_config['mean']:.4f} ± {best_config['std']:.4f}
-  • Based on {best_config['count']} trials
-                
-Performance Range:
-  • Best: {stats_df['mean'].min():.4f}
-  • Worst: {stats_df['mean'].max():.4f}
-  • Improvement: {(stats_df['mean'].max() - stats_df['mean'].min()) / stats_df['mean'].max() * 100:.1f}%
-                
-Total Trials: {len(grid_data):,}
-Configurations: {len(stats_df)}"""
+                                Best Configuration:
+                                • {best_config['agents']} agents, interval {best_config['interval']}
+                                • KL Divergence: {best_config['mean']:.4f} ± {best_config['std']:.4f}
+                                • Based on {best_config['count']} trials
+                                                
+                                Performance Range:
+                                • Best: {stats_df['mean'].min():.4f}
+                                • Worst: {stats_df['mean'].max():.4f}
+                                • Improvement: {(stats_df['mean'].max() - stats_df['mean'].min()) / stats_df['mean'].max() * 100:.1f}%
+                                                
+                                Total Trials: {len(grid_data):,}
+                                Configurations: {len(stats_df)}"""
                 
                 ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes, 
                         fontfamily='monospace', fontsize=10, verticalalignment='top',
@@ -1061,15 +1117,22 @@ Key Insights:
         
         for _, row in self.df.iterrows():
             grid = row['grid_size']
+            #print(f"grid_size is {grid}")
             agents = row['n_agents']
+            #print(f"n_agents is {agents}")
             interval = row['merge_interval']
+            #print(f"interval is {interval}")
             
             # Create nested structure: grid -> agents -> interval -> series list
             if grid not in time_series_data:
                 time_series_data[grid] = {}
+                #print(f"grid is not in time_series_data")
+                 
             if agents not in time_series_data[grid]:
                 time_series_data[grid][agents] = {}
+                #print(f"agents is not in time_series_data")
             if interval not in time_series_data[grid][agents]:
+                #print(f"interval is not in time_series_data")
                 time_series_data[grid][agents][interval] = {
                     'kl_series': [],
                     'target_prob_series': [],
@@ -1108,6 +1171,8 @@ Key Insights:
         merge_intervals = sorted(set(interval for grid_data in time_series_data.values() 
                                    for agent_data in grid_data.values() 
                                    for interval in agent_data.keys()))
+        print(f"grids are {grid_sizes}, agents {agent_numbers}, intervals {merge_intervals}")
+        
         
         # Create multiple figures for different perspectives
         
@@ -2136,6 +2201,1170 @@ Key Insights:
         
         print(f"KL evolution overview saved: {evolution_overview_path}")
 
+    def create_information_tracking_analysis(self):
+        """Analyze cumulative information gain vs tracking error - AVERAGED ACROSS CONDITIONS"""
+        
+        print("\nCreating information tracking analysis...")
+        
+        # Extract merge events with information metrics
+        merge_data = []
+        
+        for _, row in self.df.iterrows():
+            trial = row['trial_data']
+            
+            if 'time_series' not in trial:
+                continue
+                
+            ts = trial['time_series']
+            
+            if ('cumulative_info_since_merge' not in ts or 
+                'ground_truth_evolution' not in ts or
+                'kl_divergence_to_truth' not in ts):
+                continue
+            
+            # Extract data at merge events
+            if 'merge_events' in ts and ts['merge_events']:
+                for merge_event in ts['merge_events']:
+                    merge_step = merge_event['step']
+                    
+                    if merge_step < len(ts['cumulative_info_since_merge']):
+                        merge_data.append({
+                            'grid_size': row['grid_size'],
+                            'n_agents': row['n_agents'],
+                            'merge_interval': row['merge_interval'],
+                            'merge_method': row.get('merge_method', 'standard_kl'),
+                            'step': merge_step,
+                            'cumulative_info': ts['cumulative_info_since_merge'][merge_step],
+                            'tracking_error': ts['kl_divergence_to_truth'][merge_step],
+                            'kl_before': merge_event['kl_before'],
+                            'kl_after': merge_event['kl_after'],
+                            'improvement': merge_event['improvement'],
+                            'steps_since_merge': ts['steps_since_merge'][merge_step]
+                        })
+        
+        if not merge_data:
+            print("  WARNING: No information tracking data found!")
+            print("  Make sure you've run experiments with the updated code.")
+            return
+        
+        merge_df = pd.DataFrame(merge_data)
+        print(f"  Found {len(merge_df)} merge events with information tracking")
+        
+        # Calculate efficiency metric
+        merge_df['efficiency'] = merge_df['improvement'] / (merge_df['cumulative_info'] + 1e-6)
+        merge_df['info_rate'] = merge_df['cumulative_info'] / (merge_df['steps_since_merge'] + 1)
+        
+        # Clean up any inf/nan values that could cause rendering issues
+        merge_df['efficiency'] = merge_df['efficiency'].replace([np.inf, -np.inf], np.nan)
+        merge_df['info_rate'] = merge_df['info_rate'].replace([np.inf, -np.inf], np.nan)
+        
+        # Create comprehensive averaged visualization
+        fig = plt.figure(figsize=(20, 12), dpi=100)
+        
+        # ========== ROW 1: BY MERGE INTERVAL ==========
+        
+        # 1. Cumulative Info at Merge by Interval
+        ax1 = plt.subplot(3, 4, 1)
+        
+        interval_stats = merge_df.groupby('merge_interval').agg({
+            'cumulative_info': ['mean', 'std'],
+            'tracking_error': ['mean', 'std'],
+            'improvement': ['mean', 'std']
+        })
+        
+        intervals = sorted(merge_df['merge_interval'].unique())
+        x_labels = [f"{int(i)}" if i != float('inf') else "∞" for i in intervals]
+        x_pos = range(len(intervals))
+        
+        means = [interval_stats.loc[i, ('cumulative_info', 'mean')] for i in intervals]
+        stds = [interval_stats.loc[i, ('cumulative_info', 'std')] for i in intervals]
+        
+        ax1.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='red', edgecolor='black')
+        ax1.set_xticks(x_pos)
+        ax1.set_xticklabels(x_labels)
+        ax1.set_xlabel('Merge Interval')
+        ax1.set_ylabel('Cumulative Information at Merge')
+        ax1.set_title('Info Accumulated Before Communication')
+        ax1.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for i, (m, s) in enumerate(zip(means, stds)):
+            ax1.text(i, m + s + 0.02, f'{m:.3f}', ha='center', fontsize=9, fontweight='bold')
+        
+        # 2. Tracking Error at Merge by Interval
+        ax2 = plt.subplot(3, 4, 2)
+        
+        means = [interval_stats.loc[i, ('tracking_error', 'mean')] for i in intervals]
+        stds = [interval_stats.loc[i, ('tracking_error', 'std')] for i in intervals]
+        
+        ax2.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='blue', edgecolor='black')
+        ax2.set_xticks(x_pos)
+        ax2.set_xticklabels(x_labels)
+        ax2.set_xlabel('Merge Interval')
+        ax2.set_ylabel('Tracking Error at Merge')
+        ax2.set_title('How Wrong Before Communication')
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        for i, (m, s) in enumerate(zip(means, stds)):
+            ax2.text(i, m + s + 0.02, f'{m:.3f}', ha='center', fontsize=9, fontweight='bold')
+        
+        # 3. Improvement from Merge by Interval
+        ax3 = plt.subplot(3, 4, 3)
+        
+        means = [interval_stats.loc[i, ('improvement', 'mean')] for i in intervals]
+        stds = [interval_stats.loc[i, ('improvement', 'std')] for i in intervals]
+        
+        ax3.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='green', edgecolor='black')
+        ax3.set_xticks(x_pos)
+        ax3.set_xticklabels(x_labels)
+        ax3.set_xlabel('Merge Interval')
+        ax3.set_ylabel('KL Improvement from Merge')
+        ax3.set_title('Benefit of Communication')
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        for i, (m, s) in enumerate(zip(means, stds)):
+            ax3.text(i, m + s + 0.005, f'{m:.3f}', ha='center', fontsize=9, fontweight='bold')
+        
+        # 4. Efficiency by Interval
+        ax4 = plt.subplot(3, 4, 4)
+        
+        efficiency_stats = merge_df.groupby('merge_interval')['efficiency'].agg(['mean', 'std'])
+        means = [efficiency_stats.loc[i, 'mean'] for i in intervals]
+        stds = [efficiency_stats.loc[i, 'std'] for i in intervals]
+        
+        colors = ['green' if m > 0 else 'red' for m in means]
+        ax4.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color=colors, edgecolor='black')
+        ax4.set_xticks(x_pos)
+        ax4.set_xticklabels(x_labels)
+        ax4.set_xlabel('Merge Interval')
+        ax4.set_ylabel('Efficiency (Improvement / Info)')
+        ax4.set_title('Communication Efficiency')
+        ax4.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax4.grid(True, alpha=0.3, axis='y')
+        
+        for i, (m, s) in enumerate(zip(means, stds)):
+            y_offset = s + 0.01 if m >= 0 else -(s + 0.01)
+            ax4.text(i, m + y_offset, f'{m:.2f}', ha='center', fontsize=9, fontweight='bold')
+        
+        # ========== ROW 2: BY GRID SIZE ==========
+        
+        # 5. Cumulative Info by Grid Size
+        ax5 = plt.subplot(3, 4, 5)
+        
+        grid_stats = merge_df.groupby('grid_size').agg({
+            'cumulative_info': ['mean', 'std'],
+            'tracking_error': ['mean', 'std'],
+            'improvement': ['mean', 'std']
+        })
+        
+        grids = sorted(merge_df['grid_size'].unique())
+        x_pos = range(len(grids))
+        
+        means = [grid_stats.loc[g, ('cumulative_info', 'mean')] for g in grids]
+        stds = [grid_stats.loc[g, ('cumulative_info', 'std')] for g in grids]
+        
+        ax5.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='red', edgecolor='black')
+        ax5.set_xticks(x_pos)
+        ax5.set_xticklabels(grids, rotation=45)
+        ax5.set_xlabel('Grid Size')
+        ax5.set_ylabel('Cumulative Information at Merge')
+        ax5.set_title('Info by Problem Size')
+        ax5.grid(True, alpha=0.3, axis='y')
+        
+        # 6. Tracking Error by Grid Size
+        ax6 = plt.subplot(3, 4, 6)
+        
+        means = [grid_stats.loc[g, ('tracking_error', 'mean')] for g in grids]
+        stds = [grid_stats.loc[g, ('tracking_error', 'std')] for g in grids]
+        
+        ax6.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='blue', edgecolor='black')
+        ax6.set_xticks(x_pos)
+        ax6.set_xticklabels(grids, rotation=45)
+        ax6.set_xlabel('Grid Size')
+        ax6.set_ylabel('Tracking Error at Merge')
+        ax6.set_title('Error by Problem Size')
+        ax6.grid(True, alpha=0.3, axis='y')
+        
+        # 7. Improvement by Grid Size
+        ax7 = plt.subplot(3, 4, 7)
+        
+        means = [grid_stats.loc[g, ('improvement', 'mean')] for g in grids]
+        stds = [grid_stats.loc[g, ('improvement', 'std')] for g in grids]
+        
+        ax7.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='green', edgecolor='black')
+        ax7.set_xticks(x_pos)
+        ax7.set_xticklabels(grids, rotation=45)
+        ax7.set_xlabel('Grid Size')
+        ax7.set_ylabel('Improvement from Merge')
+        ax7.set_title('Merge Benefit by Problem Size')
+        ax7.grid(True, alpha=0.3, axis='y')
+        
+        # 8. Info Accumulation Rate by Grid Size
+        ax8 = plt.subplot(3, 4, 8)
+        
+        rate_stats = merge_df.groupby('grid_size')['info_rate'].agg(['mean', 'std'])
+        means = [rate_stats.loc[g, 'mean'] for g in grids]
+        stds = [rate_stats.loc[g, 'std'] for g in grids]
+        
+        ax8.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='orange', edgecolor='black')
+        ax8.set_xticks(x_pos)
+        ax8.set_xticklabels(grids, rotation=45)
+        ax8.set_xlabel('Grid Size')
+        ax8.set_ylabel('Info Accumulation Rate (per step)')
+        ax8.set_title('How Fast Info Accumulates')
+        ax8.grid(True, alpha=0.3, axis='y')
+        
+        # ========== ROW 3: BY AGENT COUNT ==========
+        
+        # 9. Cumulative Info by Agent Count
+        ax9 = plt.subplot(3, 4, 9)
+        
+        agent_stats = merge_df.groupby('n_agents').agg({
+            'cumulative_info': ['mean', 'std'],
+            'tracking_error': ['mean', 'std'],
+            'improvement': ['mean', 'std']
+        })
+        
+        agents = sorted(merge_df['n_agents'].unique())
+        x_pos = range(len(agents))
+        
+        means = [agent_stats.loc[a, ('cumulative_info', 'mean')] for a in agents]
+        stds = [agent_stats.loc[a, ('cumulative_info', 'std')] for a in agents]
+        
+        ax9.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='red', edgecolor='black')
+        ax9.set_xticks(x_pos)
+        ax9.set_xticklabels([f'{a} agents' for a in agents])
+        ax9.set_xlabel('Number of Agents')
+        ax9.set_ylabel('Cumulative Information at Merge')
+        ax9.set_title('Info by Team Size')
+        ax9.grid(True, alpha=0.3, axis='y')
+        
+        # 10. Tracking Error by Agent Count
+        ax10 = plt.subplot(3, 4, 10)
+        
+        means = [agent_stats.loc[a, ('tracking_error', 'mean')] for a in agents]
+        stds = [agent_stats.loc[a, ('tracking_error', 'std')] for a in agents]
+        
+        ax10.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='blue', edgecolor='black')
+        ax10.set_xticks(x_pos)
+        ax10.set_xticklabels([f'{a} agents' for a in agents])
+        ax10.set_xlabel('Number of Agents')
+        ax10.set_ylabel('Tracking Error at Merge')
+        ax10.set_title('Error by Team Size')
+        ax10.grid(True, alpha=0.3, axis='y')
+        
+        # 11. Improvement by Agent Count
+        ax11 = plt.subplot(3, 4, 11)
+        
+        means = [agent_stats.loc[a, ('improvement', 'mean')] for a in agents]
+        stds = [agent_stats.loc[a, ('improvement', 'std')] for a in agents]
+        
+        ax11.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7, color='green', edgecolor='black')
+        ax11.set_xticks(x_pos)
+        ax11.set_xticklabels([f'{a} agents' for a in agents])
+        ax11.set_xlabel('Number of Agents')
+        ax11.set_ylabel('Improvement from Merge')
+        ax11.set_title('Merge Benefit by Team Size')
+        ax11.grid(True, alpha=0.3, axis='y')
+        
+        # 12. Combined Heatmap: Interval × Grid Size
+        ax12 = plt.subplot(3, 4, 12)
+        
+        try:
+            # Create pivot table for heatmap
+            heatmap_data = merge_df.groupby(['merge_interval', 'grid_size'])['efficiency'].mean().reset_index()
+            
+            if not heatmap_data.empty:
+                pivot_table = heatmap_data.pivot(index='merge_interval', columns='grid_size', values='efficiency')
+                
+                # Clean any problematic values
+                pivot_table = pivot_table.fillna(0)
+                
+                # Rename index for display
+                pivot_table.index = [f"{int(i)}" if i != float('inf') else "∞" for i in pivot_table.index]
+                
+                sns.heatmap(pivot_table, annot=True, fmt='.2f', cmap='RdYlGn', 
+                           center=0, ax=ax12, cbar_kws={'label': 'Efficiency'})
+                ax12.set_title('Efficiency: Interval × Grid Size')
+                ax12.set_xlabel('Grid Size')
+                ax12.set_ylabel('Merge Interval')
+        except Exception as e:
+            ax12.text(0.5, 0.5, f'Heatmap Error:\n{str(e)}', 
+                     ha='center', va='center', transform=ax12.transAxes)
+            ax12.set_title('Efficiency Heatmap (Error)')
+        
+        plt.suptitle('Information Tracking Analysis: When Should Agents Communicate?', 
+                    fontsize=14, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.98])
+        
+        # Save with safer parameters
+        info_tracking_path = self.output_dir / 'information_tracking_analysis.png'
+        plt.savefig(info_tracking_path, dpi=150, bbox_inches=None)
+        plt.close()
+        
+        print(f"  Information tracking analysis saved: {info_tracking_path}")
+        
+        # Print detailed statistics
+        print(f"\n  ========== KEY INSIGHTS ==========")
+        
+        print(f"\n  BY MERGE INTERVAL:")
+        for interval in intervals:
+            stats = interval_stats.loc[interval]
+            int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+            print(f"    Interval {int_str}:")
+            print(f"      Cumulative Info: {stats[('cumulative_info', 'mean')]:.4f} ± {stats[('cumulative_info', 'std')]:.4f}")
+            print(f"      Tracking Error:  {stats[('tracking_error', 'mean')]:.4f} ± {stats[('tracking_error', 'std')]:.4f}")
+            print(f"      Improvement:     {stats[('improvement', 'mean')]:.4f} ± {stats[('improvement', 'std')]:.4f}")
+        
+        print(f"\n  BY GRID SIZE:")
+        for grid in grids:
+            stats = grid_stats.loc[grid]
+            print(f"    Grid {grid}:")
+            print(f"      Cumulative Info: {stats[('cumulative_info', 'mean')]:.4f} ± {stats[('cumulative_info', 'std')]:.4f}")
+            print(f"      Tracking Error:  {stats[('tracking_error', 'mean')]:.4f} ± {stats[('tracking_error', 'std')]:.4f}")
+        
+        print(f"\n  BY AGENT COUNT:")
+        for agents in sorted(merge_df['n_agents'].unique()):
+            stats = agent_stats.loc[agents]
+            print(f"    {agents} agents:")
+            print(f"      Cumulative Info: {stats[('cumulative_info', 'mean')]:.4f} ± {stats[('cumulative_info', 'std')]:.4f}")
+            print(f"      Tracking Error:  {stats[('tracking_error', 'mean')]:.4f} ± {stats[('tracking_error', 'std')]:.4f}")
+        
+        # Find best configurations
+        best_efficiency_idx = merge_df.groupby(['merge_interval', 'grid_size', 'n_agents'])['efficiency'].mean().idxmax()
+        print(f"\n  BEST CONFIGURATION (highest efficiency):")
+        print(f"    Interval: {int(best_efficiency_idx[0]) if best_efficiency_idx[0] != float('inf') else '∞'}")
+        print(f"    Grid: {best_efficiency_idx[1]}")
+        print(f"    Agents: {best_efficiency_idx[2]}")
+        
+        print(f"\n  ===================================")
+
+    def create_cumulative_information_gain_analysis(self):
+        """
+        Analyze cumulative information gain over time
+        - With reset at merge events (local accumulation)
+        - Without reset (global accumulation)
+        """
+        print("Creating cumulative information gain analysis...")
+        
+        time_series_data = self.extract_time_series_data()
+        
+        if not time_series_data:
+            print("No time series data available for cumulative analysis")
+            return
+        
+        grid_sizes = sorted(time_series_data.keys())
+        agent_numbers = sorted(set(agents for grid_data in time_series_data.values() 
+                                 for agents in grid_data.keys()))
+        merge_intervals = sorted(set(interval for grid_data in time_series_data.values() 
+                                   for agent_data in grid_data.values() 
+                                   for interval in agent_data.keys()))
+        
+        # Create multiple comprehensive figures
+        self.create_cumulative_by_interval(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        self.create_cumulative_by_grid(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        self.create_cumulative_by_agents(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+        self.create_cumulative_comparison_matrix(time_series_data, grid_sizes, agent_numbers, merge_intervals)
+    
+    def create_cumulative_by_interval(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Cumulative information gain analysis by merge interval"""
+        
+        n_intervals = len(merge_intervals)
+        fig = plt.figure(figsize=(24, 8 * n_intervals))
+        
+        for i, interval in enumerate(merge_intervals):
+            
+            # Plot 1: Cumulative with resets (local)
+            ax1 = plt.subplot(n_intervals, 3, i*3 + 1)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, len(grid_sizes) * len(agent_numbers)))
+            color_idx = 0
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        if series_list:
+                            # Compute cumulative info gain with resets
+                            all_cumulative_reset = []
+                            
+                            for kl_series in series_list:
+                                cumulative_reset = [0]
+                                current_cum = 0
+                                
+                                # Reset at each merge interval
+                                for step in range(1, len(kl_series)):
+                                    # Information gain is reduction in KL
+                                    info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                    current_cum += info_gain
+                                    
+                                    # Reset at merge events
+                                    if interval != float('inf') and interval > 0 and step % interval == 0:
+                                        current_cum = 0
+                                    
+                                    cumulative_reset.append(current_cum)
+                                
+                                all_cumulative_reset.append(cumulative_reset)
+                            
+                            # Average across trials
+                            max_len = max(len(c) for c in all_cumulative_reset)
+                            padded = []
+                            for c in all_cumulative_reset:
+                                if len(c) < max_len:
+                                    padded.append(c + [c[-1]] * (max_len - len(c)))
+                                else:
+                                    padded.append(c)
+                            
+                            mean_cumulative = np.mean(padded, axis=0)
+                            steps = range(len(mean_cumulative))
+                            
+                            label = f"Grid {grid}, {agents}ag"
+                            ax1.plot(steps, mean_cumulative, color=colors[color_idx], 
+                                   linewidth=2, alpha=0.8, label=label)
+                            
+                            # Mark merge events
+                            if interval != float('inf') and interval > 0:
+                                merge_points = range(int(interval), len(steps), int(interval))
+                                for mp in merge_points[:5]:
+                                    ax1.axvline(mp, color=colors[color_idx], alpha=0.2, 
+                                              linestyle='--', linewidth=1)
+                            
+                            color_idx += 1
+            
+            int_str = f"Interval {int(interval)}" if interval != float('inf') else "No Merge"
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('Cumulative Info Gain (Reset at Merge)')
+            ax1.set_title(f'{int_str}: Local Accumulation')
+            ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Cumulative without resets (global)
+            ax2 = plt.subplot(n_intervals, 3, i*3 + 2)
+            
+            color_idx = 0
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        if series_list:
+                            # Compute cumulative info gain without resets
+                            all_cumulative_global = []
+                            
+                            for kl_series in series_list:
+                                cumulative_global = [0]
+                                total = 0
+                                
+                                for step in range(1, len(kl_series)):
+                                    info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                    total += info_gain
+                                    cumulative_global.append(total)
+                                
+                                all_cumulative_global.append(cumulative_global)
+                            
+                            # Average across trials
+                            max_len = max(len(c) for c in all_cumulative_global)
+                            padded = []
+                            for c in all_cumulative_global:
+                                if len(c) < max_len:
+                                    padded.append(c + [c[-1]] * (max_len - len(c)))
+                                else:
+                                    padded.append(c)
+                            
+                            mean_cumulative = np.mean(padded, axis=0)
+                            steps = range(len(mean_cumulative))
+                            
+                            label = f"Grid {grid}, {agents}ag"
+                            ax2.plot(steps, mean_cumulative, color=colors[color_idx], 
+                                   linewidth=2, alpha=0.8, label=label)
+                            
+                            # Mark merge events (visual only, no reset)
+                            if interval != float('inf') and interval > 0:
+                                merge_points = range(int(interval), len(steps), int(interval))
+                                for mp in merge_points[:5]:
+                                    ax2.axvline(mp, color=colors[color_idx], alpha=0.1, 
+                                              linestyle=':', linewidth=1)
+                            
+                            color_idx += 1
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('Cumulative Info Gain (Never Reset)')
+            ax2.set_title(f'{int_str}: Global Accumulation')
+            ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Rate of information gain
+            ax3 = plt.subplot(n_intervals, 3, i*3 + 3)
+            
+            color_idx = 0
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        if series_list:
+                            # Compute instantaneous info gain rate
+                            all_rates = []
+                            
+                            for kl_series in series_list:
+                                rates = [0]
+                                for step in range(1, len(kl_series)):
+                                    rate = max(0, kl_series[step-1] - kl_series[step])
+                                    rates.append(rate)
+                                all_rates.append(rates)
+                            
+                            # Average across trials
+                            max_len = max(len(r) for r in all_rates)
+                            padded = []
+                            for r in all_rates:
+                                if len(r) < max_len:
+                                    padded.append(r + [r[-1]] * (max_len - len(r)))
+                                else:
+                                    padded.append(r)
+                            
+                            mean_rate = np.mean(padded, axis=0)
+                            
+                            # Smooth the rate for better visualization
+                            window = 10
+                            if len(mean_rate) >= window:
+                                smoothed = np.convolve(mean_rate, np.ones(window)/window, mode='valid')
+                                steps = range(window-1, len(mean_rate))
+                            else:
+                                smoothed = mean_rate
+                                steps = range(len(mean_rate))
+                            
+                            label = f"Grid {grid}, {agents}ag"
+                            ax3.plot(steps, smoothed, color=colors[color_idx], 
+                                   linewidth=2, alpha=0.8, label=label)
+                            
+                            color_idx += 1
+            
+            ax3.set_xlabel('Time Step')
+            ax3.set_ylabel('Info Gain Rate (smoothed)')
+            ax3.set_title(f'{int_str}: Information Gain Rate')
+            ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+            ax3.grid(True, alpha=0.3)
+        
+        plt.suptitle('Cumulative Information Gain by Merge Interval', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        output_path = self.output_dir / 'cumulative_info_gain_by_interval.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Cumulative info gain by interval saved: {output_path}")
+    
+    def create_cumulative_by_grid(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Cumulative information gain analysis by grid size"""
+        
+        n_grids = len(grid_sizes)
+        fig = plt.figure(figsize=(24, 8 * n_grids))
+        
+        for i, grid in enumerate(grid_sizes):
+            
+            # Plot 1: Cumulative with resets for all intervals
+            ax1 = plt.subplot(n_grids, 3, i*3 + 1)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, len(merge_intervals)))
+            
+            for j, interval in enumerate(merge_intervals):
+                all_cumulative_reset = []
+                
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            cumulative_reset = [0]
+                            current_cum = 0
+                            
+                            for step in range(1, len(kl_series)):
+                                info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                current_cum += info_gain
+                                
+                                if interval != float('inf') and interval > 0 and step % interval == 0:
+                                    current_cum = 0
+                                
+                                cumulative_reset.append(current_cum)
+                            
+                            all_cumulative_reset.append(cumulative_reset)
+                
+                if all_cumulative_reset:
+                    max_len = max(len(c) for c in all_cumulative_reset)
+                    padded = []
+                    for c in all_cumulative_reset:
+                        if len(c) < max_len:
+                            padded.append(c + [c[-1]] * (max_len - len(c)))
+                        else:
+                            padded.append(c)
+                    
+                    mean_cumulative = np.mean(padded, axis=0)
+                    steps = range(len(mean_cumulative))
+                    
+                    int_str = f"Int {int(interval)}" if interval != float('inf') else "No Merge"
+                    ax1.plot(steps, mean_cumulative, color=colors[j], 
+                           linewidth=2, alpha=0.8, label=int_str)
+            
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('Cumulative Info Gain (Reset at Merge)')
+            ax1.set_title(f'Grid {grid}: Local Accumulation by Interval')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Cumulative without resets for all intervals
+            ax2 = plt.subplot(n_grids, 3, i*3 + 2)
+            
+            for j, interval in enumerate(merge_intervals):
+                all_cumulative_global = []
+                
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            cumulative_global = [0]
+                            total = 0
+                            
+                            for step in range(1, len(kl_series)):
+                                info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                total += info_gain
+                                cumulative_global.append(total)
+                            
+                            all_cumulative_global.append(cumulative_global)
+                
+                if all_cumulative_global:
+                    max_len = max(len(c) for c in all_cumulative_global)
+                    padded = []
+                    for c in all_cumulative_global:
+                        if len(c) < max_len:
+                            padded.append(c + [c[-1]] * (max_len - len(c)))
+                        else:
+                            padded.append(c)
+                    
+                    mean_cumulative = np.mean(padded, axis=0)
+                    steps = range(len(mean_cumulative))
+                    
+                    int_str = f"Int {int(interval)}" if interval != float('inf') else "No Merge"
+                    ax2.plot(steps, mean_cumulative, color=colors[j], 
+                           linewidth=2, alpha=0.8, label=int_str)
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('Cumulative Info Gain (Never Reset)')
+            ax2.set_title(f'Grid {grid}: Global Accumulation by Interval')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Final cumulative gain comparison
+            ax3 = plt.subplot(n_grids, 3, i*3 + 3)
+            
+            final_gains_reset = []
+            final_gains_global = []
+            interval_labels = []
+            
+            for interval in merge_intervals:
+                local_gains = []
+                global_gains = []
+                
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            # Local (with resets)
+                            current_cum = 0
+                            for step in range(1, len(kl_series)):
+                                info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                current_cum += info_gain
+                                if interval != float('inf') and interval > 0 and step % interval == 0:
+                                    current_cum = 0
+                            local_gains.append(current_cum)
+                            
+                            # Global (never reset)
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            global_gains.append(total)
+                
+                if local_gains and global_gains:
+                    final_gains_reset.append(np.mean(local_gains))
+                    final_gains_global.append(np.mean(global_gains))
+                    int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                    interval_labels.append(int_str)
+            
+            x = np.arange(len(interval_labels))
+            width = 0.35
+            
+            ax3.bar(x - width/2, final_gains_reset, width, label='Local (Reset)', alpha=0.8)
+            ax3.bar(x + width/2, final_gains_global, width, label='Global (Never Reset)', alpha=0.8)
+            
+            ax3.set_xlabel('Merge Interval')
+            ax3.set_ylabel('Final Cumulative Info Gain')
+            ax3.set_title(f'Grid {grid}: Total Information Gained')
+            ax3.set_xticks(x)
+            ax3.set_xticklabels(interval_labels)
+            ax3.legend()
+            ax3.grid(True, alpha=0.3, axis='y')
+        
+        plt.suptitle('Cumulative Information Gain by Grid Size', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        output_path = self.output_dir / 'cumulative_info_gain_by_grid.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Cumulative info gain by grid saved: {output_path}")
+    
+    def create_cumulative_by_agents(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Cumulative information gain analysis by agent count"""
+        
+        n_agents = len(agent_numbers)
+        fig = plt.figure(figsize=(24, 8 * n_agents))
+        
+        for i, agents in enumerate(agent_numbers):
+            
+            # Plot 1: Cumulative with resets for all grids
+            ax1 = plt.subplot(n_agents, 3, i*3 + 1)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, len(grid_sizes)))
+            
+            for j, grid in enumerate(grid_sizes):
+                all_cumulative_reset = []
+                
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            cumulative_reset = [0]
+                            current_cum = 0
+                            
+                            for step in range(1, len(kl_series)):
+                                info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                current_cum += info_gain
+                                
+                                if interval != float('inf') and interval > 0 and step % interval == 0:
+                                    current_cum = 0
+                                
+                                cumulative_reset.append(current_cum)
+                            
+                            all_cumulative_reset.append(cumulative_reset)
+                
+                if all_cumulative_reset:
+                    max_len = max(len(c) for c in all_cumulative_reset)
+                    padded = []
+                    for c in all_cumulative_reset:
+                        if len(c) < max_len:
+                            padded.append(c + [c[-1]] * (max_len - len(c)))
+                        else:
+                            padded.append(c)
+                    
+                    mean_cumulative = np.mean(padded, axis=0)
+                    steps = range(len(mean_cumulative))
+                    
+                    ax1.plot(steps, mean_cumulative, color=colors[j], 
+                           linewidth=2, alpha=0.8, label=f'Grid {grid}')
+            
+            ax1.set_xlabel('Time Step')
+            ax1.set_ylabel('Cumulative Info Gain (Reset at Merge)')
+            ax1.set_title(f'{agents} Agents: Local Accumulation by Grid')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Cumulative without resets for all grids
+            ax2 = plt.subplot(n_agents, 3, i*3 + 2)
+            
+            for j, grid in enumerate(grid_sizes):
+                all_cumulative_global = []
+                
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            cumulative_global = [0]
+                            total = 0
+                            
+                            for step in range(1, len(kl_series)):
+                                info_gain = max(0, kl_series[step-1] - kl_series[step])
+                                total += info_gain
+                                cumulative_global.append(total)
+                            
+                            all_cumulative_global.append(cumulative_global)
+                
+                if all_cumulative_global:
+                    max_len = max(len(c) for c in all_cumulative_global)
+                    padded = []
+                    for c in all_cumulative_global:
+                        if len(c) < max_len:
+                            padded.append(c + [c[-1]] * (max_len - len(c)))
+                        else:
+                            padded.append(c)
+                    
+                    mean_cumulative = np.mean(padded, axis=0)
+                    steps = range(len(mean_cumulative))
+                    
+                    ax2.plot(steps, mean_cumulative, color=colors[j], 
+                           linewidth=2, alpha=0.8, label=f'Grid {grid}')
+            
+            ax2.set_xlabel('Time Step')
+            ax2.set_ylabel('Cumulative Info Gain (Never Reset)')
+            ax2.set_title(f'{agents} Agents: Global Accumulation by Grid')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Efficiency per agent
+            ax3 = plt.subplot(n_agents, 3, i*3 + 3)
+            
+            for j, grid in enumerate(grid_sizes):
+                interval_efficiencies = []
+                interval_labels = []
+                
+                for interval in merge_intervals:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        total_gains = []
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            total_gains.append(total)
+                        
+                        if total_gains:
+                            # Info gain per agent
+                            efficiency = np.mean(total_gains) / agents
+                            interval_efficiencies.append(efficiency)
+                            int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                            interval_labels.append(int_str)
+                
+                if interval_efficiencies:
+                    ax3.plot(range(len(interval_labels)), interval_efficiencies, 
+                           'o-', color=colors[j], linewidth=2, markersize=8, 
+                           alpha=0.8, label=f'Grid {grid}')
+            
+            ax3.set_xlabel('Merge Interval')
+            ax3.set_ylabel('Info Gain per Agent')
+            ax3.set_title(f'{agents} Agents: Information Efficiency')
+            ax3.set_xticks(range(len(interval_labels)))
+            ax3.set_xticklabels(interval_labels)
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+        
+        plt.suptitle('Cumulative Information Gain by Agent Count', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        output_path = self.output_dir / 'cumulative_info_gain_by_agents.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Cumulative info gain by agents saved: {output_path}")
+    
+    def create_cumulative_comparison_matrix(self, time_series_data, grid_sizes, agent_numbers, merge_intervals):
+        """Create comprehensive comparison matrix of cumulative gains"""
+        
+        fig = plt.figure(figsize=(24, 16))
+        
+        # 1. Heatmap: Grid × Interval (avg across agents) - Global accumulation
+        ax1 = plt.subplot(2, 3, 1)
+        
+        matrix_data = np.zeros((len(grid_sizes), len(merge_intervals)))
+        
+        for i, grid in enumerate(grid_sizes):
+            for j, interval in enumerate(merge_intervals):
+                gains = []
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            gains.append(total)
+                
+                if gains:
+                    matrix_data[i, j] = np.mean(gains)
+        
+        im = ax1.imshow(matrix_data, cmap='viridis', aspect='auto')
+        ax1.set_xticks(range(len(merge_intervals)))
+        ax1.set_yticks(range(len(grid_sizes)))
+        ax1.set_xticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in merge_intervals])
+        ax1.set_yticklabels([f"{g}" for g in grid_sizes])
+        ax1.set_title('Total Info Gain: Grid × Interval\n(Avg across agents)')
+        ax1.set_xlabel('Merge Interval')
+        ax1.set_ylabel('Grid Size')
+        
+        for i in range(len(grid_sizes)):
+            for j in range(len(merge_intervals)):
+                text = ax1.text(j, i, f'{matrix_data[i, j]:.2f}',
+                              ha="center", va="center", color="white", fontsize=8)
+        
+        plt.colorbar(im, ax=ax1, shrink=0.8)
+        
+        # 2. Heatmap: Agents × Interval (avg across grids) - Global accumulation
+        ax2 = plt.subplot(2, 3, 2)
+        
+        matrix_data2 = np.zeros((len(agent_numbers), len(merge_intervals)))
+        
+        for i, agents in enumerate(agent_numbers):
+            for j, interval in enumerate(merge_intervals):
+                gains = []
+                for grid in grid_sizes:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            gains.append(total)
+                
+                if gains:
+                    matrix_data2[i, j] = np.mean(gains)
+        
+        im = ax2.imshow(matrix_data2, cmap='viridis', aspect='auto')
+        ax2.set_xticks(range(len(merge_intervals)))
+        ax2.set_yticks(range(len(agent_numbers)))
+        ax2.set_xticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in merge_intervals])
+        ax2.set_yticklabels([f"{a}" for a in agent_numbers])
+        ax2.set_title('Total Info Gain: Agents × Interval\n(Avg across grids)')
+        ax2.set_xlabel('Merge Interval')
+        ax2.set_ylabel('Number of Agents')
+        
+        for i in range(len(agent_numbers)):
+            for j in range(len(merge_intervals)):
+                text = ax2.text(j, i, f'{matrix_data2[i, j]:.2f}',
+                              ha="center", va="center", color="white", fontsize=8)
+        
+        plt.colorbar(im, ax=ax2, shrink=0.8)
+        
+        # 3. Bar chart: Best configuration for each interval
+        ax3 = plt.subplot(2, 3, 3)
+        
+        best_configs = []
+        for interval in merge_intervals:
+            max_gain = 0
+            best_config = None
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        gains = []
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            gains.append(total)
+                        
+                        if gains:
+                            avg_gain = np.mean(gains)
+                            if avg_gain > max_gain:
+                                max_gain = avg_gain
+                                best_config = f"{grid}, {agents}ag"
+            
+            best_configs.append((interval, max_gain, best_config))
+        
+        intervals_str = [f"{int(i)}" if i != float('inf') else "∞" for i, _, _ in best_configs]
+        gains = [g for _, g, _ in best_configs]
+        
+        bars = ax3.bar(range(len(intervals_str)), gains, alpha=0.8)
+        ax3.set_xticks(range(len(intervals_str)))
+        ax3.set_xticklabels(intervals_str)
+        ax3.set_xlabel('Merge Interval')
+        ax3.set_ylabel('Maximum Info Gain')
+        ax3.set_title('Best Configuration per Interval')
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Add configuration labels
+        for i, (_, gain, config) in enumerate(best_configs):
+            ax3.text(i, gain + 0.1, config, ha='center', va='bottom', 
+                   fontsize=8, rotation=45)
+        
+        # 4. Line plot: Interval effect across different problem sizes
+        ax4 = plt.subplot(2, 3, 4)
+        
+        colors = plt.cm.tab10(np.linspace(0, 1, len(grid_sizes)))
+        
+        for i, grid in enumerate(grid_sizes):
+            interval_gains = []
+            
+            for interval in merge_intervals:
+                gains = []
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            gains.append(total)
+                
+                if gains:
+                    interval_gains.append(np.mean(gains))
+                else:
+                    interval_gains.append(0)
+            
+            ax4.plot(range(len(merge_intervals)), interval_gains, 'o-', 
+                   color=colors[i], linewidth=2, markersize=8, 
+                   alpha=0.8, label=f'Grid {grid}')
+        
+        ax4.set_xticks(range(len(merge_intervals)))
+        ax4.set_xticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in merge_intervals])
+        ax4.set_xlabel('Merge Interval')
+        ax4.set_ylabel('Average Total Info Gain')
+        ax4.set_title('Communication Frequency Effect by Grid Size')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        # 5. Scatter: Problem complexity vs info gain
+        ax5 = plt.subplot(2, 3, 5)
+        
+        complexity_values = []
+        gain_values = []
+        interval_colors = []
+        
+        color_map = plt.cm.viridis(np.linspace(0, 1, len(merge_intervals)))
+        
+        for k, interval in enumerate(merge_intervals):
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        # Parse grid size
+                        if isinstance(grid, str) and 'x' in grid:
+                            rows, cols = map(int, grid.split('x'))
+                            grid_area = rows * cols
+                        else:
+                            grid_area = 100
+                        
+                        complexity = grid_area * agents
+                        
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            complexity_values.append(complexity)
+                            gain_values.append(total)
+                            interval_colors.append(color_map[k])
+        
+        scatter = ax5.scatter(complexity_values, gain_values, c=interval_colors, 
+                            alpha=0.6, s=50)
+        ax5.set_xlabel('Problem Complexity (Grid Area × Agents)')
+        ax5.set_ylabel('Total Info Gain')
+        ax5.set_title('Complexity vs Information Gain')
+        ax5.grid(True, alpha=0.3)
+        
+        # Add colorbar for intervals
+        sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis, 
+                                   norm=plt.Normalize(vmin=0, vmax=len(merge_intervals)-1))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax5)
+        cbar.set_label('Merge Interval')
+        cbar.set_ticks(range(len(merge_intervals)))
+        cbar.set_ticklabels([f"{int(i)}" if i != float('inf') else "∞" for i in merge_intervals])
+        
+        # 6. Summary statistics table
+        ax6 = plt.subplot(2, 3, 6)
+        ax6.axis('off')
+        
+        summary_stats = []
+        for interval in merge_intervals:
+            all_gains = []
+            
+            for grid in grid_sizes:
+                for agents in agent_numbers:
+                    if (grid in time_series_data and 
+                        agents in time_series_data[grid] and 
+                        interval in time_series_data[grid][agents]):
+                        
+                        series_list = time_series_data[grid][agents][interval]['kl_series']
+                        
+                        for kl_series in series_list:
+                            total = sum(max(0, kl_series[s-1] - kl_series[s]) 
+                                      for s in range(1, len(kl_series)))
+                            all_gains.append(total)
+            
+            if all_gains:
+                int_str = f"{int(interval)}" if interval != float('inf') else "∞"
+                summary_stats.append([
+                    int_str,
+                    f"{np.mean(all_gains):.3f}",
+                    f"{np.std(all_gains):.3f}",
+                    f"{np.min(all_gains):.3f}",
+                    f"{np.max(all_gains):.3f}",
+                    f"{len(all_gains)}"
+                ])
+        
+        if summary_stats:
+            table = ax6.table(
+                cellText=summary_stats,
+                colLabels=['Interval', 'Mean', 'Std', 'Min', 'Max', 'N'],
+                cellLoc='center',
+                loc='center',
+                bbox=[0, 0.2, 1, 0.6]
+            )
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+            table.scale(1, 2)
+            
+            # Highlight best interval
+            best_idx = np.argmax([float(row[1]) for row in summary_stats]) + 1
+            for j in range(len(summary_stats[0])):
+                table[(best_idx, j)].set_facecolor('lightgreen')
+                table[(best_idx, j)].set_alpha(0.5)
+        
+        ax6.set_title('Cumulative Info Gain Statistics', fontsize=12, fontweight='bold', y=0.9)
+        
+        plt.suptitle('Cumulative Information Gain: Comprehensive Comparison', 
+                    fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        output_path = self.output_dir / 'cumulative_info_gain_comparison_matrix.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Cumulative comparison matrix saved: {output_path}")
     
     def run_analysis(self):
         """Run complete comprehensive analysis"""
@@ -2149,7 +3378,9 @@ Key Insights:
         # Generate all analyses
         self.create_comprehensive_analysis()
         self.create_kl_evolution_analysis()  # Add this new analysis
-        
+        self.create_information_tracking_analysis()  # NEW: Add information tracking
+        self.create_cumulative_information_gain_analysis()  # Add new analysis
+
         print(f"\nComprehensive analysis complete!")
         print(f"Generated files in {self.output_dir}:")
         print(f"  - grid_size_comprehensive_analysis.png")
@@ -2158,6 +3389,15 @@ Key Insights:
         print(f"  - three_way_interaction_analysis.png")
         print(f"  - performance_surfaces.png")
         print(f"  - statistical_analysis.png")
+        print(f"  - kl_evolution_by_interval.png")
+        print(f"  - kl_evolution_by_grid_size.png")
+        print(f"  - kl_evolution_by_agent_count.png")
+        print(f"  - kl_evolution_overview.png")
+        print(f"  - information_tracking_analysis.png")  # NEW
+        print(f"  - cumulative_info_gain_by_interval.png")
+        print(f"  - cumulative_info_gain_by_grid.png")
+        print(f"  - cumulative_info_gain_by_agents.png")
+        print(f"  - cumulative_info_gain_comparison_matrix.png")
         
         # Print key findings
         print(f"\n" + "="*60)
@@ -2192,11 +3432,11 @@ def main():
         description='Comprehensive KL-divergence performance analysis',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
-Examples:
-  python comprehensive_kl_analysis.py results/consolidated_results_20241219_143022.pkl
-  python comprehensive_kl_analysis.py results/kl_focused_results_20241219_150000.pkl
-        '''
-    )
+                Examples:
+                python comprehensive_kl_analysis.py results/consolidated_results_20241219_143022.pkl
+                python comprehensive_kl_analysis.py results/kl_focused_results_20241219_150000.pkl
+                        '''
+        )
     
     parser.add_argument('results_file', 
                        help='Path to the pickle file containing results')

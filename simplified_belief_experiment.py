@@ -91,6 +91,7 @@ class KLBeliefExperiment:
         """
         KL-divergence minimization (your method)
         """
+        #print("we're in standard_KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
@@ -131,6 +132,7 @@ class KLBeliefExperiment:
     
     def merge_beliefs_visit_weighted(self, beliefs: List[np.ndarray], visit_counts: np.ndarray) -> np.ndarray:
         """Visit-weighted KL-divergence minimization"""
+        #print("we're in visit weighted KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
@@ -176,6 +178,7 @@ class KLBeliefExperiment:
     def merge_beliefs_observation_weighted(self, beliefs: List[np.ndarray], 
                                     observation_counts: np.ndarray) -> np.ndarray:
         """Weight by actual observations (detections) at each position"""
+        #print("we're in observation weighted KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
@@ -215,6 +218,7 @@ class KLBeliefExperiment:
 
     def merge_beliefs_entropy_weighted(self, beliefs: List[np.ndarray]) -> np.ndarray:
         """Weight by inverse entropy (more certain beliefs get higher weight)"""
+        #print("we're in entropy KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
@@ -257,7 +261,8 @@ class KLBeliefExperiment:
     def merge_beliefs_confidence_weighted(self, beliefs: List[np.ndarray], 
                                      lambda_penalty: float = 0.1,
                                      eta_threshold: float = 0.3) -> np.ndarray:
-    """Confidence-weighted KL with penalty for high-entropy states"""
+        """Confidence-weighted KL with penalty for high-entropy states"""
+        #print("we're in confidence weighted KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
@@ -306,7 +311,7 @@ class KLBeliefExperiment:
 
     def tune_confidence_hyperparameters(self, beliefs_sample: List[np.ndarray], 
                                    ground_truth_sample: np.ndarray) -> Tuple[float, float]:
-    """Find optimal lambda and eta for confidence-weighted merge"""
+        """Find optimal lambda and eta for confidence-weighted merge"""
         from scipy.optimize import differential_evolution
         
         def evaluate_params(params):
@@ -336,6 +341,7 @@ class KLBeliefExperiment:
     def run_trial(self, merge_interval: int, target_trajectory: List[int], trial_seed: int,
                   merge_method: str = 'standard_kl') -> Dict:
         """Run a single trial with KL method at specified merge interval"""
+        #print(f"method used {merge_method}")
         np.random.seed(trial_seed)
         
         # Initialize agent positions (spread across grid)
@@ -359,7 +365,11 @@ class KLBeliefExperiment:
             'target_prob_merged': [],
             'target_prob_truth': [],
             'merge_events': [],
-            'full_beliefs': [] 
+            'full_beliefs': [], 
+            # NEW: Information tracking metrics
+            'ground_truth_evolution': [],  # KL(truth[t] || truth[t-1])
+            'cumulative_info_since_merge': [],  # Sum of evolution since last merge
+            'steps_since_merge': []  # Steps since last communication
         }
         
         max_steps = min(len(target_trajectory), 1000)
@@ -372,6 +382,10 @@ class KLBeliefExperiment:
         optimal_lambda = 0.1  # Default
         optimal_eta = 0.3     # Default
         hyperparams_tuned = False
+        # For tracking ground truth evolution
+        previous_ground_truth = None
+        last_merge_step = 0
+        cumulative_info = 0.0
 
         for step in range(max_steps):
             target_pos = target_trajectory[step]
@@ -428,7 +442,26 @@ class KLBeliefExperiment:
 
             ground_truth = self.compute_ground_truth_belief(all_observations)
 
+            # Track ground truth evolution (how much did optimal belief change?)
+            if previous_ground_truth is not None:
+                # Compute KL divergence between current and previous ground truth
+                prev_gt_clipped = np.clip(previous_ground_truth, 1e-10, 1)
+                curr_gt_clipped = np.clip(ground_truth, 1e-10, 1)
+                gt_evolution = np.sum(curr_gt_clipped * np.log(curr_gt_clipped / prev_gt_clipped))
+                
+                # Accumulate information since last merge
+                cumulative_info += gt_evolution
+            else:
+                gt_evolution = 0.0
             
+            # Store metrics
+            metrics['ground_truth_evolution'].append(gt_evolution)
+            metrics['cumulative_info_since_merge'].append(cumulative_info)
+            metrics['steps_since_merge'].append(step - last_merge_step)
+            
+            # Update previous ground truth for next iteration
+            previous_ground_truth = ground_truth.copy()
+
             # Compute ground truth
             current_merged = np.mean(beliefs, axis=0)
 
@@ -477,6 +510,9 @@ class KLBeliefExperiment:
                     'improvement': self._compute_kl_to_truth(pre_merge_avg, all_observations) - 
                                 self._compute_kl_to_truth(merged, all_observations)
                 })
+                # Reset information tracking after merge
+                last_merge_step = step
+                cumulative_info = 0.0
             else:
                 # Between merges - use average of beliefs (cheap approximation)
                 current_belief = np.mean(beliefs, axis=0)
@@ -803,6 +839,7 @@ class DistributedExperimentManager:
     
     def _extract_method_results(self, all_results: Dict, method: str) -> Dict:
         """Extract results for a single method"""
+        #print(f"we are collecting result for {method} pkl")
         method_results = {}
         
         for grid_key, grid_data in all_results.items():

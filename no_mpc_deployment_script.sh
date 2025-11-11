@@ -53,13 +53,14 @@ cat > configs/test_config.json << 'EOF'
     "n_trials": 10,
     "max_steps": 100,
     "merge_intervals": [5, 10, "inf"],
-    "merge_methods": ["standard_kl", "visit_weighted", "observation_weighted", "entropy_weighted", "confidence_weighted"],
+    "merge_methods": ["standard_kl"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
 EOF
 
 # Standard configuration
+# "merge_methods": ["standard_kl", "visit_weighted", "observation_weighted", "entropy_weighted", "confidence_weighted"]
 cat > configs/standard_config.json << 'EOF'
 {
     "grid_sizes": [[10, 10], [20, 20], [30, 30]],
@@ -69,7 +70,7 @@ cat > configs/standard_config.json << 'EOF'
     "n_trials": 50,
     "max_steps": 200,
     "merge_intervals": [5, 10, 15, "inf"],
-    "merge_methods": ["standard_kl", "visit_weighted", "observation_weighted", "entropy_weighted", "confidence_weighted"],
+    "merge_methods": ["standard_kl"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -85,7 +86,7 @@ cat > configs/large_config.json << 'EOF'
     "n_trials": 100,
     "max_steps": 300,
     "merge_intervals": [5, 10, 15, 25, 50, 100, "inf"],
-    "merge_methods": ["standard_kl", "visit_weighted", "observation_weighted", "entropy_weighted", "confidence_weighted"],
+    "merge_methods": ["standard_kl"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
