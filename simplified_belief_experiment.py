@@ -132,15 +132,25 @@ class KLBeliefExperiment:
     
     def merge_beliefs_visit_weighted(self, beliefs: List[np.ndarray], visit_counts: np.ndarray) -> np.ndarray:
         """Visit-weighted KL-divergence minimization"""
-        #print("we're in visit weighted KL")
         if len(beliefs) == 1:
             return beliefs[0].copy()
         
-        # Calculate position-specific weights for each agent
-        weights_matrix = np.zeros((len(beliefs), self.n_states))
-        for i in range(len(beliefs)):
-            # Add 1 to avoid division by zero
-            weights_matrix[i] = (visit_counts[i] + 1) / np.sum(visit_counts + len(beliefs))
+        n_agents = len(beliefs)
+        
+        # CORRECTED: State-specific weights
+        weights_matrix = np.zeros((n_agents, self.n_states))
+        
+        for s in range(self.n_states):
+            # For each state, compute how much each agent visited it
+            visits_at_s = visit_counts[:, s] + 1  # Add 1 to avoid zeros
+            total_visits_at_s = np.sum(visits_at_s)
+            
+            # Normalize: weights sum to 1 across agents for this state
+            weights_matrix[:, s] = visits_at_s / total_visits_at_s
+        
+        # Verify weights sum to 1 for each state
+        assert np.allclose(np.sum(weights_matrix, axis=0), 1.0), \
+            "Weights should sum to 1 for each state"
         
         def objective(merged_flat):
             merged = np.clip(merged_flat, 1e-10, 1)
@@ -149,18 +159,20 @@ class KLBeliefExperiment:
             total_div = 0
             for i, belief in enumerate(beliefs):
                 belief_clip = np.clip(belief, 1e-10, 1)
-                # Position-specific weighted KL divergence
+                # State-specific weighted KL
+                # For each state s: w_i(s) * belief_i(s) * log(belief_i(s) / merged(s))
                 kl_per_state = belief_clip * np.log(belief_clip / merged)
                 weighted_kl = np.sum(weights_matrix[i] * kl_per_state)
                 total_div += weighted_kl
             
             return total_div
         
-        # Initial guess: weighted average based on visit counts
-        initial = np.average(beliefs, axis=0, weights=np.sum(visit_counts + 1, axis=1))
+        # Initial guess: weighted average by total visits per agent
+        agent_weights = np.sum(visit_counts + 1, axis=1)
+        agent_weights = agent_weights / np.sum(agent_weights)
+        initial = np.average(beliefs, axis=0, weights=agent_weights)
         initial = initial / np.sum(initial)
         
-        # Same optimization as before
         constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
         bounds = [(1e-10, 1) for _ in range(self.n_states)]
         
