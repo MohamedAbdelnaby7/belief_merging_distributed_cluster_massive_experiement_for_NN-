@@ -105,7 +105,8 @@ class KLBeliefExperiment:
             total_div = 0
             for i, belief in enumerate(beliefs):
                 belief_clip = np.clip(belief, 1e-10, 1)
-                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                # kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                kl = np.sum(merged * np.log(merged / belief_clip))
                 total_div += weights[i] * kl
             
             return total_div
@@ -205,7 +206,8 @@ class KLBeliefExperiment:
             total_div = 0
             for i, belief in enumerate(beliefs):
                 belief_clip = np.clip(belief, 1e-10, 1)
-                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                # kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                kl = np.sum(merged * np.log(merged / belief_clip))
                 total_div += weights[i] * kl
             
             return total_div
@@ -247,7 +249,8 @@ class KLBeliefExperiment:
             total_div = 0
             for i, belief in enumerate(beliefs):
                 belief_clip = np.clip(belief, 1e-10, 1)
-                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                # kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                kl = np.sum(merged * np.log(merged / belief_clip))
                 total_div += weights[i] * kl
             
             return total_div
@@ -289,7 +292,8 @@ class KLBeliefExperiment:
             kl_term = 0
             for i, belief in enumerate(beliefs):
                 belief_clip = np.clip(belief, 1e-10, 1)
-                kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                # kl = np.sum(belief_clip * np.log(belief_clip / merged))
+                kl = np.sum(merged * np.log(merged / belief_clip))
                 kl_term += weights[i] * kl
             
             # Confidence penalty term
