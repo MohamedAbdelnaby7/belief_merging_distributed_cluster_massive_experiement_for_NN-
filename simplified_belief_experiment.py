@@ -325,6 +325,21 @@ class KLBeliefExperiment:
         merged = result.x
         return merged / np.sum(merged)
 
+    def merge_beliefs_arithmetic(self, beliefs: List[np.ndarray]) -> np.ndarray:
+        """Arithmetic Mean (Linear Opinion Pool)"""
+        if len(beliefs) == 1: return beliefs[0].copy()
+        merged = np.mean(beliefs, axis=0)
+        return merged / np.sum(merged)
+
+    def merge_beliefs_geometric(self, beliefs: List[np.ndarray]) -> np.ndarray:
+        """Geometric Mean (Logarithmic Opinion Pool) - The 'Veto' Method"""
+        if len(beliefs) == 1: return beliefs[0].copy()
+        # Log-space summation to avoid underflow
+        log_beliefs = [np.log(np.clip(b, 1e-10, 1)) for b in beliefs]
+        sum_log = np.sum(log_beliefs, axis=0)
+        merged = np.exp(sum_log)
+        return merged / np.sum(merged)
+
     def tune_confidence_hyperparameters(self, beliefs_sample: List[np.ndarray], 
                                    ground_truth_sample: np.ndarray) -> Tuple[float, float]:
         """Find optimal lambda and eta for confidence-weighted merge"""
@@ -512,6 +527,10 @@ class KLBeliefExperiment:
                     merged = self.merge_beliefs_confidence_weighted(
                         beliefs, optimal_lambda, optimal_eta
                     )
+                elif merge_method == 'arithmetic_mean':     # NEW
+                    merged = self.merge_beliefs_arithmetic(beliefs)
+                elif merge_method == 'geometric_mean':      # NEW
+                    merged = self.merge_beliefs_geometric(beliefs)
                 else:
                     raise ValueError(f"Unknown merge method: {merge_method}")
                 

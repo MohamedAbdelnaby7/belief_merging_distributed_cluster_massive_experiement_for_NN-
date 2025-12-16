@@ -53,7 +53,7 @@ cat > configs/test_config.json << 'EOF'
     "n_trials": 10,
     "max_steps": 100,
     "merge_intervals": [5, 10, "inf"],
-    "merge_methods": ["standard_kl" , "visit_weighted"],
+    "merge_methods": ["standard_kl" , "visit_weighted", "arithmetic_mean", "geometric_mean"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -70,7 +70,7 @@ cat > configs/standard_config.json << 'EOF'
     "n_trials": 50,
     "max_steps": 200,
     "merge_intervals": [5, 10, 15, "inf"],
-    "merge_methods": ["standard_kl", "visit_weighted"],
+    "merge_methods": ["standard_kl", "visit_weighted", "arithmetic_mean", "geometric_mean"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
@@ -86,7 +86,7 @@ cat > configs/large_config.json << 'EOF'
     "n_trials": 100,
     "max_steps": 300,
     "merge_intervals": [5, 10, 15, 25, 50, 100, "inf"],
-    "merge_methods": ["standard_kl"],
+    "merge_methods": ["standard_kl", "arithmetic_mean", "geometric_mean"],
     "target_patterns": ["random"],
     "checkpoint_dir": "checkpoints"
 }
