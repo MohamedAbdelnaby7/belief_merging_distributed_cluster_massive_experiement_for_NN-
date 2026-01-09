@@ -59,9 +59,9 @@ class ReasonableResourceManager:
             
             # Large - comprehensive, may wait 1-2 days for scheduling
             'large': {
-                'cores': 128,
+                'cores': 180,
                 'memory_gb': 256,
-                'time_hours': 110,
+                'time_hours': 120,
                 'nodes': 4,
                 'partition': 'long',
                 'description': 'Large comprehensive study'
@@ -83,7 +83,9 @@ class ReasonableResourceManager:
                 'max_steps': 200,
                 'merge_intervals': [0, 50, float('inf')],
                 'target_patterns': ['random'],
-                'fast_mode': False  # TRUE MPC
+                'fast_mode': False,  # TRUE MPC
+                'random_walk_mode': False, # Active search
+                'merge_methods': ['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
             },
             
             'small': {
@@ -94,7 +96,9 @@ class ReasonableResourceManager:
                 'max_steps': 500,
                 'merge_intervals': [0, 25, 100, float('inf')],
                 'target_patterns': ['random', 'evasive'],
-                'fast_mode': False  # TRUE MPC
+                'fast_mode': False,  # TRUE MPC
+                'random_walk_mode': False,
+                'merge_methods': ['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
             },
             
             'standard': {
@@ -105,7 +109,9 @@ class ReasonableResourceManager:
                 'max_steps': 1000,
                 'merge_intervals': [0, 10, 25, 50, 100, 200, float('inf')],
                 'target_patterns': ['random', 'evasive', 'patrol'],
-                'fast_mode': False  # TRUE MPC - computationally intensive
+                'fast_mode': False,  # TRUE MPC - computationally intensive
+                'random_walk_mode': False,
+                'merge_methods': ['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
             },
             
             'large': {
@@ -116,7 +122,9 @@ class ReasonableResourceManager:
                 'max_steps': 1000,
                 'merge_intervals': [0, 5, 10, 25, 50, 100, 200, 500, float('inf')],
                 'target_patterns': ['random', 'evasive', 'patrol'],
-                'fast_mode': False  # TRUE MPC
+                'fast_mode': False,  # TRUE MPC
+                'random_walk_mode': False,
+                'merge_methods': ['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
             }
         }
         
@@ -269,8 +277,9 @@ exit $EXIT_CODE
         n_agent_configs = len(config['n_agents_list'])
         n_intervals = len(config['merge_intervals'])
         n_patterns = len(config['target_patterns'])
+        n_methods = len(config.get('merge_methods', ['standard_kl']))
         n_trials = config['n_trials']
-        total_tasks = n_grid_sizes * n_agent_configs * n_intervals * n_patterns * n_trials
+        total_tasks = n_grid_sizes * n_agent_configs * n_intervals * n_patterns * n_trials * n_methods
         
         # TRUE MPC is much slower than fast mode
         # Time scales with grid size and number of agents

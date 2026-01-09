@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Complete Standalone Distributed Belief Merging Experiment
-Modified to support multiple grid sizes and agent numbers
+Modified to support multiple grid sizes, agent numbers, and NEW MERGE METHODS.
 Includes all original classes + distributed execution framework
 No external dependencies on your original file
 FIXED: Consistent seed generation for proper checkpointing
@@ -82,7 +82,7 @@ class UnifiedBeliefMergingFramework:
         self.n_agents = n_agents
         
     def merge_beliefs_average(self, beliefs, agent_weights=None):
-        """Simple averaging of beliefs"""
+        """Simple averaging of beliefs (Arithmetic Mean)"""
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs)) / len(beliefs)
         
@@ -91,9 +91,29 @@ class UnifiedBeliefMergingFramework:
             merged += agent_weights[i] * belief
         
         return merged / np.sum(merged)
+
+    def merge_beliefs_geometric(self, beliefs, agent_weights=None):
+        """Geometric Mean (Logarithmic Opinion Pool) - The 'Veto' Method"""
+        # This corresponds to Reverse KL Minimization (Analytical Solution)
+        if len(beliefs) == 1: return beliefs[0].copy()
+        
+        # Log-space summation to avoid underflow
+        # log(prod(p_i)) = sum(log(p_i))
+        log_beliefs = [np.log(np.clip(b, 1e-10, 1)) for b in beliefs]
+        
+        # If weights are provided, multiply logs by weights (weighted geometric mean)
+        if agent_weights is not None:
+             weighted_log_sum = np.sum([w * lb for w, lb in zip(agent_weights, log_beliefs)], axis=0)
+        else:
+             weighted_log_sum = np.sum(log_beliefs, axis=0)
+             
+        merged = np.exp(weighted_log_sum)
+        return merged / np.sum(merged)
     
     def merge_beliefs_kl(self, beliefs, agent_weights=None):
-        """KL divergence-based merging"""
+        """Standard KL divergence-based merging (Forward KL)"""
+        # Objective: min Sum w_i KL(P_i || Q)
+        
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs))
         
@@ -113,6 +133,50 @@ class UnifiedBeliefMergingFramework:
             return total_divergence
         
         # Initial guess: weighted average
+        initial_guess = self.merge_beliefs_average(beliefs, agent_weights)
+        
+        # Constraints and bounds
+        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+        bounds = [(0, 1) for _ in range(len(initial_guess.flatten()))]
+        
+        result = minimize(
+            objective,
+            initial_guess.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 1000, 'ftol': 1e-10}
+        )
+        
+        if result.success:
+            merged = result.x.reshape(initial_guess.shape)
+            return merged / np.sum(merged)
+        else:
+            return initial_guess
+
+    def merge_beliefs_reverse_kl(self, beliefs, agent_weights=None):
+        """Reverse KL divergence merging (Optimization based)"""
+        # Objective: min Sum w_i KL(Q || P_i)
+        
+        if agent_weights is None:
+            agent_weights = np.ones(len(beliefs))
+        
+        def reverse_kl_divergence(q, p):
+            q = np.clip(q, 1e-10, 1)
+            p = np.clip(p, 1e-10, 1)
+            return np.sum(q * np.log(q / p))
+        
+        def objective(merged_flat):
+            merged = merged_flat.reshape(beliefs[0].shape)
+            merged = merged / np.sum(merged)
+            
+            total_divergence = 0
+            for i, belief in enumerate(beliefs):
+                total_divergence += agent_weights[i] * reverse_kl_divergence(merged, belief)
+            
+            return total_divergence
+        
+        # Initial guess: geometric mean (since it's the analytical solution)
         initial_guess = self.merge_beliefs_average(beliefs, agent_weights)
         
         # Constraints and bounds
@@ -246,11 +310,15 @@ class MultiAgentMPC:
         
     def get_joint_action(self, beliefs: Union[np.ndarray, List[np.ndarray]], 
                         agent_positions: List[int], 
-                        fast_mode: bool = False) -> List[int]:
+                        fast_mode: bool = False,
+                        random_walk_mode: bool = False) -> List[int]: # Added random_walk_mode
         """
         Get optimal joint action for all agents
         TRUE MPC implementation (computationally intensive)
         """
+        if random_walk_mode:
+             return self._get_random_joint_action(agent_positions)
+
         if fast_mode:
             return self._get_greedy_joint_action(beliefs, agent_positions)
         
@@ -292,6 +360,14 @@ class MultiAgentMPC:
         
         return best_joint_action
     
+    def _get_random_joint_action(self, agent_positions: List[int]) -> List[int]:
+        """Simple random walk for all agents (Baseline)"""
+        joint_action = []
+        for pos in agent_positions:
+            neighbors = self._get_neighbors(pos)
+            joint_action.append(np.random.choice(neighbors))
+        return joint_action
+
     def _get_greedy_joint_action(self, beliefs: Union[np.ndarray, List[np.ndarray]], 
                                  agent_positions: List[int]) -> List[int]:
         """
@@ -475,11 +551,12 @@ class ControlledMergingExperiment:
         self.merger = UnifiedBeliefMergingFramework(grid_size, n_agents)
         self.mpc = MultiAgentMPC(grid_size, n_agents, horizon, alpha, beta)
         
-    def _run_single_experiment(self, trial_config, merge_interval, max_steps, fast_mode=False):
-        """Run a single experiment with specified merge interval"""
+    def _run_single_experiment(self, trial_config, merge_interval, max_steps, fast_mode=False, 
+                               random_walk_mode=False, merge_method='standard_kl'):
+        """Run a single experiment with specified merge interval and method"""
         # Special case for full communication
         if merge_interval == 0:
-            return self._run_centralized_full_communication(trial_config, max_steps, fast_mode)
+            return self._run_centralized_full_communication(trial_config, max_steps, fast_mode, random_walk_mode)
         
         # For other strategies
         start_time = time.time()
@@ -533,8 +610,17 @@ class ControlledMergingExperiment:
                 # Save beliefs BEFORE merge
                 beliefs_before = [b.copy() for b in agent_beliefs]
                 
-                # Perform belief merging
-                merged_belief = self.merger.merge_beliefs_kl(agent_beliefs)
+                # Perform belief merging - UPDATED TO SUPPORT METHODS
+                if merge_method == 'geometric_mean':
+                    merged_belief = self.merger.merge_beliefs_geometric(agent_beliefs)
+                elif merge_method == 'arithmetic_mean':
+                    merged_belief = self.merger.merge_beliefs_average(agent_beliefs)
+                elif merge_method == 'reverse_kl':
+                    merged_belief = self.merger.merge_beliefs_reverse_kl(agent_beliefs)
+                elif merge_method == 'standard_kl':
+                    merged_belief = self.merger.merge_beliefs_kl(agent_beliefs)
+                else: # Fallback to KL
+                    merged_belief = self.merger.merge_beliefs_kl(agent_beliefs)
                 
                 # Update all agents with merged belief
                 for i in range(self.n_agents):
@@ -555,7 +641,8 @@ class ControlledMergingExperiment:
             joint_action = self.mpc.get_joint_action(
                 agent_beliefs,
                 agent_positions,
-                fast_mode=fast_mode
+                fast_mode=fast_mode,
+                random_walk_mode=random_walk_mode
             )
             
             # Make observations BEFORE moving
@@ -585,7 +672,11 @@ class ControlledMergingExperiment:
         # Final merge for no_comm strategy
         if merge_interval == float('inf'):
             final_beliefs = agent_beliefs
-            final_merged = self.merger.merge_beliefs_kl(final_beliefs)
+            # For final metric, we can use the requested method to see the theoretical consensus
+            if merge_method == 'geometric_mean' or merge_method == 'reverse_kl':
+                final_merged = self.merger.merge_beliefs_geometric(final_beliefs)
+            else:
+                final_merged = self.merger.merge_beliefs_kl(final_beliefs)
         else:
             final_beliefs = agent_beliefs
             final_merged = np.mean(final_beliefs, axis=0)
@@ -621,7 +712,7 @@ class ControlledMergingExperiment:
             'agent_trajectories': agent_trajectories
         }
     
-    def _run_centralized_full_communication(self, trial_config, max_steps, fast_mode=False):
+    def _run_centralized_full_communication(self, trial_config, max_steps, fast_mode=False, random_walk_mode=False):
         """Run true full communication - single shared belief, coordinated MPC"""
         start_time = time.time()
         
@@ -659,7 +750,8 @@ class ControlledMergingExperiment:
             joint_action = self.mpc.get_joint_action(
                 shared_belief, 
                 agent_positions, 
-                fast_mode=fast_mode
+                fast_mode=fast_mode,
+                random_walk_mode=random_walk_mode
             )
             
             # ALL agents make observations BEFORE moving
@@ -737,12 +829,16 @@ class ExperimentConfig:
     merge_intervals: List[Union[int, float]] = None
     target_patterns: List[str] = None
     fast_mode: bool = False  # TRUE MPC by default
+    random_walk_mode: bool = False # Control mode: True = Random Walk, False = Active MPC
+    merge_methods: List[str] = None # List of methods to test
     
     def __post_init__(self):
         if self.merge_intervals is None:
             self.merge_intervals = [0, 10, 25, 50, 100, 200, 500, float('inf')]
         if self.target_patterns is None:
             self.target_patterns = ['random', 'evasive', 'patrol']
+        if self.merge_methods is None:
+            self.merge_methods = ['standard_kl']
     
     def to_dict(self):
         d = asdict(self)
@@ -766,6 +862,7 @@ class TrialTask:
     pattern: str
     trial_id: int
     merge_interval: Union[int, float]
+    merge_method: str
     config: ExperimentConfig
     trial_seed: int
     checkpoint_dir: str
@@ -773,7 +870,7 @@ class TrialTask:
     def get_task_id(self):
         """Generate unique task ID including grid size and n_agents"""
         grid_str = f"{self.grid_size[0]}x{self.grid_size[1]}"
-        return f"grid{grid_str}_agents{self.n_agents}_{self.pattern}_trial{self.trial_id}_interval{self.merge_interval}_seed{self.trial_seed}"
+        return f"grid{grid_str}_agents{self.n_agents}_{self.pattern}_{self.merge_method}_trial{self.trial_id}_interval{self.merge_interval}_seed{self.trial_seed}"
     
     def get_checkpoint_path(self):
         """Get checkpoint file path for this task"""
@@ -839,17 +936,19 @@ class DistributedExperimentManager:
                         trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                         
                         for merge_interval in self.config.merge_intervals:
-                            task = TrialTask(
-                                grid_size=grid_size,
-                                n_agents=n_agents,
-                                pattern=pattern,
-                                trial_id=trial_id,
-                                merge_interval=merge_interval,
-                                config=self.config,
-                                trial_seed=trial_seed,
-                                checkpoint_dir=str(self.checkpoint_dir)
-                            )
-                            tasks.append(task)
+                            for merge_method in self.config.merge_methods:
+                                task = TrialTask(
+                                    grid_size=grid_size,
+                                    n_agents=n_agents,
+                                    pattern=pattern,
+                                    trial_id=trial_id,
+                                    merge_interval=merge_interval,
+                                    merge_method=merge_method,
+                                    config=self.config,
+                                    trial_seed=trial_seed,
+                                    checkpoint_dir=str(self.checkpoint_dir)
+                                )
+                                tasks.append(task)
         
         self.total_tasks = len(tasks)
         self.logger.info(f"Generated {self.total_tasks} total tasks")
@@ -997,32 +1096,38 @@ class DistributedExperimentManager:
                     pattern_results = {}
                     
                     for merge_interval in self.config.merge_intervals:
-                        interval_results = []
+                        interval_results = {}
+                        
+                        # Initialize for methods
+                        for method in self.config.merge_methods:
+                            interval_results[method] = []
                         
                         for trial_id in range(self.config.n_trials):
                             # FIXED: Use consistent seed generation
                             trial_seed = generate_consistent_seed(grid_size, n_agents, pattern, trial_id)
                             
-                            task = TrialTask(
-                                grid_size=grid_size,
-                                n_agents=n_agents,
-                                pattern=pattern,
-                                trial_id=trial_id,
-                                merge_interval=merge_interval,
-                                config=self.config,
-                                trial_seed=trial_seed,
-                                checkpoint_dir=str(self.checkpoint_dir)
-                            )
-                            
-                            checkpoint_path = task.get_checkpoint_path()
-                            
-                            if os.path.exists(checkpoint_path):
-                                try:
-                                    with open(checkpoint_path, 'rb') as f:
-                                        result = pickle.load(f)
-                                    interval_results.append(result)
-                                except Exception as e:
-                                    self.logger.error(f"Failed to load {checkpoint_path}: {e}")
+                            for merge_method in self.config.merge_methods:
+                                task = TrialTask(
+                                    grid_size=grid_size,
+                                    n_agents=n_agents,
+                                    pattern=pattern,
+                                    trial_id=trial_id,
+                                    merge_interval=merge_interval,
+                                    merge_method=merge_method,
+                                    config=self.config,
+                                    trial_seed=trial_seed,
+                                    checkpoint_dir=str(self.checkpoint_dir)
+                                )
+                                
+                                checkpoint_path = task.get_checkpoint_path()
+                                
+                                if os.path.exists(checkpoint_path):
+                                    try:
+                                        with open(checkpoint_path, 'rb') as f:
+                                            result = pickle.load(f)
+                                        interval_results[merge_method].append(result)
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to load {checkpoint_path}: {e}")
                         
                         # Store results with proper key naming
                         if merge_interval == 0:
@@ -1119,7 +1224,9 @@ def run_single_trial_task(task: TrialTask) -> Optional[Dict]:
             trial_config,
             task.merge_interval,
             task.config.max_steps,
-            task.config.fast_mode  # FALSE by default for TRUE MPC
+            task.config.fast_mode,  # FALSE by default for TRUE MPC
+            task.config.random_walk_mode, # Control Mode
+            task.merge_method
         )
         
         # Add metadata
@@ -1129,6 +1236,7 @@ def run_single_trial_task(task: TrialTask) -> Optional[Dict]:
             'pattern': task.pattern,
             'trial_id': task.trial_id,
             'merge_interval': task.merge_interval,
+            'merge_method': task.merge_method,
             'trial_seed': task.trial_seed,
             'hostname': socket.gethostname(),
             'pid': os.getpid(),
@@ -1199,7 +1307,9 @@ def main():
             max_steps=1000,
             merge_intervals=[0, 10, 25, 50, 100, 200, 500, float('inf')],
             target_patterns=['random', 'evasive', 'patrol'],
-            fast_mode=False  # TRUE MPC for computational accuracy
+            fast_mode=False,  # TRUE MPC for computational accuracy
+            random_walk_mode=False, # Active search by default
+            merge_methods=['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
         )
     
     print("="*80)
@@ -1209,6 +1319,8 @@ def main():
     print(f"Grid sizes: {config.grid_sizes}")
     print(f"Agent numbers: {config.n_agents_list}")
     print(f"TRUE MPC Mode: {not config.fast_mode}")
+    print(f"Random Walk Mode: {config.random_walk_mode}")
+    print(f"Methods: {config.merge_methods}")
     
     # Create and run experiment manager
     manager = DistributedExperimentManager(

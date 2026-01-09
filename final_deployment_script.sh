@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Final Reasonable Deployment for Turing Cluster
-# Modified to support multiple grid sizes and agent numbers
+# Modified to support multiple grid sizes, agent numbers, and MERGE METHODS
 # Conservative resource allocation for shared university cluster
 # TRUE MPC (no fast mode) for accurate results
 
@@ -11,7 +11,7 @@ set -e
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
+RED='\033[0;31m'Q
 PURPLE='\033[0;35m'
 NC='\033[0m'
 
@@ -23,11 +23,11 @@ header() { echo -e "${PURPLE}[SETUP]${NC} $1"; }
 
 clear
 echo "=================================================================="
-echo "MULTI-GRID TURING DEPLOYMENT"
+echo "MULTI-GRID TURING DEPLOYMENT (ENHANCED)"
 echo "=================================================================="
 echo "Self-contained belief merging experiment with TRUE MPC"
 echo "Now supports multiple grid sizes and agent numbers!"
-echo "Contains all your original algorithms + distributed framework"
+echo "New: Benchmarking multiple merge strategies (Standard KL, Reverse KL, Geometric, Arithmetic)"
 echo "NO external dependencies - everything in one file"
 echo "=================================================================="
 
@@ -55,12 +55,11 @@ REQUIRED_FILES=(
     "reasonable_turing_allocation.py"
 )
 
+# Note: experiment_analyzer.py might be optional if you rely on the built-in collection, 
+# but checking it is good practice. I'll allow it to be missing if the main script handles it.
 missing_files=()
-for file in "${REQUIRED_FILES[@]}"; do
-    if [[ ! -f "$file" ]]; then
-        missing_files+=("$file")
-    fi
-done
+if [[ ! -f "complete_distributed_experiment.py" ]]; then missing_files+=("complete_distributed_experiment.py"); fi
+if [[ ! -f "reasonable_turing_allocation.py" ]]; then missing_files+=("reasonable_turing_allocation.py"); fi
 
 if [[ ${#missing_files[@]} -gt 0 ]]; then
     error "Missing required files:"
@@ -70,7 +69,7 @@ if [[ ${#missing_files[@]} -gt 0 ]]; then
     exit 1
 fi
 
-success "All required files found"
+success "Core experiment files found"
 
 # Step 3: Setup Python environment
 header "3/6 Setting up Python environment..."
@@ -221,7 +220,7 @@ if [[ -f "configs/${EXPERIMENT_TYPE}_config.json" ]]; then
 import json
 with open('configs/${EXPERIMENT_TYPE}_config.json', 'r') as f:
     config = json.load(f)
-total = len(config['grid_sizes']) * len(config['n_agents_list']) * len(config['merge_intervals']) * len(config['target_patterns']) * config['n_trials']
+total = len(config['grid_sizes']) * len(config['n_agents_list']) * len(config['merge_intervals']) * len(config['target_patterns']) * len(config.get('merge_methods', ['standard_kl'])) * config['n_trials']
 print(total)
 " 2>/dev/null || echo "unknown")
     
@@ -334,9 +333,11 @@ case $EXPERIMENT_TYPE in
     large) TOTAL_CONFIGS=486 ;;
 esac
 
+# Account for multiple methods (x4: standard, reverse, geometric, arithmetic)
+echo "   • Methods per config: 4"
 echo "   • Configurations: ~$TOTAL_CONFIGS unique setups"
 echo "   • Tasks per config: $TRIALS trials"
-echo "   • Total experiments: ~$((TOTAL_CONFIGS * TRIALS))"
+echo "   • Total experiments: ~$((TOTAL_CONFIGS * 4 * TRIALS))"
 echo ""
 echo "This is why we need $CORES cores for reasonable runtime!"
 echo ""
