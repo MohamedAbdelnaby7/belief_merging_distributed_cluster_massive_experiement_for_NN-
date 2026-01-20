@@ -332,7 +332,7 @@ class MultiAgentMPC:
             candidate_actions.append(neighbors)
         
         # Limit search if too many combinations
-        max_combinations = 625  # 5^4 for 4 agents
+        max_combinations = 2084  # 5^4 for 4 agents
         all_combinations = list(itertools.product(*candidate_actions))
         
         if len(all_combinations) > max_combinations:
