@@ -115,8 +115,8 @@ class ReasonableResourceManager:
             },
             
             'large': {
-                'grid_sizes': [[10, 10], [15, 15], [20, 20], [25, 25], [30, 30], [40, 40], [45, 45], [50, 50], [100, 100]],  # Extended grid sizes
-                'n_agents_list': [2, 3, 4],  # All agent numbers
+                'grid_sizes': [[25, 25], [30, 30], [40, 40], [45, 45], [50, 50], [100, 100]],  # Extended grid sizes
+                'n_agents_list': [2, 3],  # All agent numbers
                 'n_trials': 10,
                 'horizon': 3,  # Full MPC horizon
                 'max_steps': 1000,

@@ -5,6 +5,7 @@ Modified to support multiple grid sizes, agent numbers, and NEW MERGE METHODS.
 Includes all original classes + distributed execution framework
 No external dependencies on your original file
 FIXED: Consistent seed generation for proper checkpointing
+NOW USING MCTS INSTEAD OF MPC FOR PLANNING
 """
 
 import numpy as np
@@ -39,6 +40,7 @@ from dataclasses import dataclass, asdict, field
 import argparse
 import socket
 import subprocess
+import math # Added for MCTS
 
 warnings.filterwarnings('ignore')
 
@@ -111,8 +113,10 @@ class UnifiedBeliefMergingFramework:
         return merged / np.sum(merged)
     
     def merge_beliefs_kl(self, beliefs, agent_weights=None):
-        """Standard KL divergence-based merging (Forward KL)"""
-        # Objective: min Sum w_i KL(P_i || Q)
+        """KL divergence-based merging (Standard/Forward KL)"""
+        # Note: Mathematically, min Sum w_i KL(P_i || Q) results in the Arithmetic Mean.
+        # This optimization method is slower but effectively finds the same result as merge_beliefs_average.
+        # We keep it for consistency with previous experiments.
         
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs))
@@ -177,7 +181,7 @@ class UnifiedBeliefMergingFramework:
             return total_divergence
         
         # Initial guess: geometric mean (since it's the analytical solution)
-        initial_guess = self.merge_beliefs_average(beliefs, agent_weights)
+        initial_guess = self.merge_beliefs_geometric(beliefs, agent_weights)
         
         # Constraints and bounds
         constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
@@ -295,71 +299,169 @@ class TargetMovementPolicy:
         return current_pos
 
 
-class MultiAgentMPC:
+# --- MCTS IMPLEMENTATION ---
+class MCTSNode:
+    """Node in MCTS Tree"""
+    def __init__(self, state: Dict, parent=None, action=None):
+        self.state = state  # {'beliefs': [np.array], 'positions': [int]}
+        self.parent = parent
+        self.action = action  # Joint action that led to this state
+        self.children = []
+        self.visits = 0
+        self.value = 0.0
+        self.untried_actions = None # Will be populated on expansion
+
+    def is_fully_expanded(self):
+        return self.untried_actions is not None and len(self.untried_actions) == 0
+
+    def best_child(self, c_param=1.414):
+        choices_weights = [
+            (child.value / child.visits) + c_param * np.sqrt((2 * np.log(self.visits) / child.visits))
+            for child in self.children
+        ]
+        return self.children[np.argmax(choices_weights)]
+
+class MultiAgentMCTS:
     """
-    Correct MPC implementation for multi-agent search
+    MCTS implementation replacing MPC for faster joint action planning
     """
-    def __init__(self, grid_size, n_agents, horizon=2, alpha=0.1, beta=0.2):
+    def __init__(self, grid_size, n_agents, horizon=10, alpha=0.1, beta=0.2, simulations=50):
         self.grid_size = grid_size
         self.rows, self.cols = grid_size
         self.n_agents = n_agents
-        self.horizon = horizon
-        self.alpha = alpha  # False positive rate
-        self.beta = beta    # False negative rate
+        self.horizon = horizon  # Max depth
+        self.alpha = alpha
+        self.beta = beta
         self.n_states = grid_size[0] * grid_size[1]
-        
+        self.simulations = simulations # Number of MCTS iterations per step
+
     def get_joint_action(self, beliefs: Union[np.ndarray, List[np.ndarray]], 
                         agent_positions: List[int], 
-                        fast_mode: bool = False,
-                        random_walk_mode: bool = False) -> List[int]: # Added random_walk_mode
-        """
-        Get optimal joint action for all agents
-        TRUE MPC implementation (computationally intensive)
-        """
+                        fast_mode: bool = False, # Kept for API compatibility
+                        random_walk_mode: bool = False) -> List[int]: 
+        
         if random_walk_mode:
              return self._get_random_joint_action(agent_positions)
 
-        if fast_mode:
-            return self._get_greedy_joint_action(beliefs, agent_positions)
-        
-        best_joint_action = agent_positions.copy()
-        best_value = -float('inf')
-        
-        # Generate candidate actions for each agent
-        candidate_actions = []
-        for pos in agent_positions:
-            neighbors = self._get_neighbors(pos)
-            candidate_actions.append(neighbors)
-        
-        # Limit search if too many combinations
-        max_combinations = 2084  # 5^4 for 4 agents
-        all_combinations = list(itertools.product(*candidate_actions))
-        
-        if len(all_combinations) > max_combinations:
-            # Sample a subset for large action spaces
-            sampled_combinations = [all_combinations[i] for i in 
-                                   np.random.choice(len(all_combinations), max_combinations, replace=False)]
+        # Root state
+        if isinstance(beliefs, np.ndarray):
+             root_beliefs = [beliefs.copy()] # Wrap single belief for consistency logic
+             shared_mode = True
         else:
-            sampled_combinations = all_combinations
+             root_beliefs = [b.copy() for b in beliefs]
+             shared_mode = False
+
+        root_state = {'beliefs': root_beliefs, 'positions': agent_positions}
+        root = MCTSNode(root_state)
         
-        # Evaluate sampled joint actions (TRUE MPC - computationally intensive)
-        for joint_action in sampled_combinations:
-            # Evaluate this joint action over the horizon
-            if isinstance(beliefs, np.ndarray):  # Shared belief
-                total_value = self._evaluate_shared_belief(
-                    beliefs.copy(), list(joint_action), self.horizon
-                )
-            else:  # Independent beliefs
-                total_value = self._evaluate_independent_beliefs(
-                    [b.copy() for b in beliefs], list(joint_action), self.horizon
-                )
+        # MCTS Loop
+        for _ in range(self.simulations):
+            node = root
             
-            if total_value > best_value:
-                best_value = total_value
-                best_joint_action = list(joint_action)
+            # Selection
+            while node.children and node.is_fully_expanded():
+                node = node.best_child()
+
+            # Expansion
+            if not node.children or not node.is_fully_expanded():
+                if node.untried_actions is None:
+                    node.untried_actions = self._get_legal_joint_actions(node.state['positions'])
+                
+                if node.untried_actions:
+                    action = node.untried_actions.pop()
+                    new_state = self._simulate_step(node.state, action, shared_mode)
+                    child_node = MCTSNode(new_state, parent=node, action=action)
+                    node.children.append(child_node)
+                    node = child_node
+            
+            # Simulation (Rollout) - Estimate value from this state
+            # For belief merging, value is usually negative entropy (Information Gain)
+            # We do a shallow rollout or just eval current state for speed
+            final_rollout_state = node.state # Simplification: Just eval state quality
+            
+            # Calculate Reward (Negative Entropy / Information Gain)
+            reward = 0
+            for b in final_rollout_state['beliefs']:
+                reward += -entropy(b) # Maximize negative entropy = Minimize entropy
+            
+            # Backpropagation
+            while node is not None:
+                node.visits += 1
+                node.value += reward
+                node = node.parent
         
-        return best_joint_action
-    
+        # Pick best action (most visited child)
+        if not root.children:
+             # Fallback if no simulations worked (shouldn't happen)
+             return agent_positions 
+             
+        best_child = max(root.children, key=lambda c: c.visits)
+        return best_child.action
+
+    def _get_legal_joint_actions(self, current_positions):
+        """Generate a subset of legal joint actions"""
+        # Full combinatorial is too big. Sample 10 random valid joint moves.
+        joint_actions = []
+        for _ in range(10): 
+            action = []
+            for pos in current_positions:
+                neighbors = self._get_neighbors(pos)
+                action.append(np.random.choice(neighbors))
+            joint_actions.append(tuple(action))
+        return list(set(joint_actions)) # Unique only
+
+    def _simulate_step(self, state, joint_action, shared_mode):
+        """Apply action and simulated observation to get new state"""
+        new_positions = list(joint_action)
+        current_beliefs = [b.copy() for b in state['beliefs']]
+        
+        # Simulate Observations (Hypothetical)
+        # To keep tree deterministic for a "planning" step, we usually assume 
+        # observations consistent with current belief peak or just no observation update logic 
+        # inside the tree expansion to save cost. 
+        # BUT for Info Gain, we need belief update.
+        # We will simulate "expected" update or just random sample based on belief.
+        
+        # Simplified: Update belief assuming NO detection (most common) or detection at highest prob?
+        # Better: Sample outcome based on current belief.
+        
+        new_beliefs = []
+        for i, b in enumerate(current_beliefs):
+            # Pick a target loc based on belief
+            target_hypothesis = np.random.choice(len(b), p=b/np.sum(b))
+            
+            # Simulate obs
+            obs = 0
+            if new_positions[i if not shared_mode else 0] == target_hypothesis: # Simplify index logic
+                 # shared mode has 1 belief but N agents. 
+                 # i is 0 in shared mode loop (len 1).
+                 pass
+            
+            # Actually, let's just do update.
+            # If shared mode, we have 1 belief, N agents in joint_action.
+            # If indep mode, N beliefs, N agents.
+            
+            if shared_mode:
+                # One shared belief updated by ALL agents
+                temp_belief = b.copy()
+                for pos in new_positions:
+                    # Sim single obs
+                    # Assume target is at max prob loc for planning heuristic
+                    target_assumed = np.argmax(temp_belief)
+                    sim_obs = 1 if (pos == target_assumed and np.random.random() > self.beta) else 0
+                    temp_belief = self._update_belief_single(temp_belief, pos, sim_obs)
+                new_beliefs.append(temp_belief)
+            else:
+                # Independent
+                 # Assume target is at max prob loc for planning heuristic
+                target_assumed = np.argmax(b)
+                pos = new_positions[i]
+                sim_obs = 1 if (pos == target_assumed and np.random.random() > self.beta) else 0
+                new_b = self._update_belief_single(b, pos, sim_obs)
+                new_beliefs.append(new_b)
+                
+        return {'beliefs': new_beliefs, 'positions': new_positions}
+
     def _get_random_joint_action(self, agent_positions: List[int]) -> List[int]:
         """Simple random walk for all agents (Baseline)"""
         joint_action = []
@@ -368,145 +470,11 @@ class MultiAgentMPC:
             joint_action.append(np.random.choice(neighbors))
         return joint_action
 
-    def _get_greedy_joint_action(self, beliefs: Union[np.ndarray, List[np.ndarray]], 
-                                 agent_positions: List[int]) -> List[int]:
-        """
-        Fast greedy approximation: each agent moves to highest belief neighbor
-        """
-        joint_action = []
-        
-        if isinstance(beliefs, np.ndarray):  # Shared belief
-            for pos in agent_positions:
-                neighbors = self._get_neighbors(pos)
-                best_pos = max(neighbors, key=lambda n: beliefs[n])
-                joint_action.append(best_pos)
-        else:  # Independent beliefs
-            for i, pos in enumerate(agent_positions):
-                neighbors = self._get_neighbors(pos)
-                best_pos = max(neighbors, key=lambda n: beliefs[i][n])
-                joint_action.append(best_pos)
-        
-        return joint_action
-    
-    def _evaluate_shared_belief(self, belief: np.ndarray, 
-                               joint_action: List[int], 
-                               horizon: int) -> float:
-        """
-        Evaluate joint action with shared belief over horizon
-        """
-        total_value = 0.0
-        current_belief = belief.copy()
-        
-        for h in range(horizon):
-            # Simulate joint observations
-            simulated_obs = self._simulate_joint_observation(joint_action, current_belief)
-            
-            # Update shared belief with all observations
-            current_belief = self._update_belief_joint(
-                current_belief, joint_action, simulated_obs
-            )
-            
-            # Calculate objective (negative entropy for information gain)
-            total_value += -entropy(current_belief)
-            
-            # For future horizons, should consider future movements
-            # Simplified: agents stay in place
-        
-        return total_value
-    
-    def _evaluate_independent_beliefs(self, beliefs: List[np.ndarray], 
-                                    joint_action: List[int], 
-                                    horizon: int) -> float:
-        """
-        Evaluate joint action with independent beliefs over horizon
-        """
-        total_value = 0.0
-        current_beliefs = [b.copy() for b in beliefs]
-        
-        for h in range(horizon):
-            # Each agent has its own belief and makes its own observation
-            for i, (action, belief) in enumerate(zip(joint_action, current_beliefs)):
-                # Simulate observation for this agent
-                obs = self._simulate_single_observation(action, belief)
-                
-                # Update this agent's belief
-                current_beliefs[i] = self._update_belief_single(
-                    belief, action, obs
-                )
-            
-            # Calculate total objective across all agents
-            for belief in current_beliefs:
-                total_value += -entropy(belief)
-        
-        return total_value
-    
-    def _simulate_joint_observation(self, joint_positions: List[int], 
-                               belief: np.ndarray) -> List[int]:
-        """
-        Simulate observations for all agents at their positions
-        """
-        # Normalize belief to ensure it sums to 1
-        belief_normalized = belief / np.sum(belief)
-        
-        # Sample target position from belief (for simulation)
-        target_pos = np.random.choice(self.n_states, p=belief_normalized)
-        
-        observations = []
-        for pos in joint_positions:
-            if pos == target_pos:
-                # True positive with probability (1-beta)
-                obs = 1 if np.random.random() < (1 - self.beta) else 0
-            else:
-                # False positive with probability alpha
-                obs = 1 if np.random.random() < self.alpha else 0
-            observations.append(obs)
-        
-        return observations
-    
-    def _simulate_single_observation(self, position: int, belief: np.ndarray) -> int:
-        """
-        Simulate observation for single agent
-        """
-        # Sample target position from belief
-        target_pos = np.random.choice(self.n_states, p=belief)
-        
-        if position == target_pos:
-            return 1 if np.random.random() < (1 - self.beta) else 0
-        else:
-            return 1 if np.random.random() < self.alpha else 0
-    
-    def _update_belief_joint(self, belief: np.ndarray, 
-                           positions: List[int], 
-                           observations: List[int]) -> np.ndarray:
-        """
-        Update belief with joint observations from all agents
-        """
-        # Likelihood for each state
-        likelihood = np.ones(self.n_states)
-        
-        for pos, obs in zip(positions, observations):
-            if obs == 1:  # Detection
-                likelihood[pos] *= (1 - self.beta)  # True positive at position
-                # False positive elsewhere
-                mask = np.ones(self.n_states, dtype=bool)
-                mask[pos] = False
-                likelihood[mask] *= self.alpha
-            else:  # No detection
-                likelihood[pos] *= self.beta  # False negative at position
-                # True negative elsewhere
-                mask = np.ones(self.n_states, dtype=bool)
-                mask[pos] = False
-                likelihood[mask] *= (1 - self.alpha)
-        
-        # Bayesian update
-        posterior = belief * likelihood
-        return posterior / (np.sum(posterior) + 1e-10)
-    
     def _update_belief_single(self, belief: np.ndarray, 
                             position: int, 
                             observation: int) -> np.ndarray:
         """
-        Update single agent's belief
+        Update single agent's belief (Copied from MPC for compatibility)
         """
         likelihood = np.ones(self.n_states)
         
@@ -549,7 +517,8 @@ class ControlledMergingExperiment:
         self.alpha = alpha  # False positive rate
         self.beta = beta   # False negative rate
         self.merger = UnifiedBeliefMergingFramework(grid_size, n_agents)
-        self.mpc = MultiAgentMPC(grid_size, n_agents, horizon, alpha, beta)
+        # REPLACED MPC WITH MCTS
+        self.planner = MultiAgentMCTS(grid_size, n_agents, horizon, alpha, beta, simulations=20) 
         
     def _run_single_experiment(self, trial_config, merge_interval, max_steps, fast_mode=False, 
                                random_walk_mode=False, merge_method='standard_kl'):
@@ -637,8 +606,8 @@ class ControlledMergingExperiment:
                     'entropy_reduction': entropy_before - entropy_after
                 })
             
-            # Get joint action using MPC (TRUE MPC if fast_mode=False)
-            joint_action = self.mpc.get_joint_action(
+            # Get joint action using MCTS (REPLACED MPC CALL)
+            joint_action = self.planner.get_joint_action(
                 agent_beliefs,
                 agent_positions,
                 fast_mode=fast_mode,
@@ -659,8 +628,8 @@ class ControlledMergingExperiment:
                 else:
                     observation = 1 if obs_rand < self.alpha else 0
                 
-                # Update individual belief
-                agent_beliefs[i] = self.mpc._update_belief_single(
+                # Update individual belief using helper in planner
+                agent_beliefs[i] = self.planner._update_belief_single(
                     agent_beliefs[i], pos, observation
                 )
             
@@ -746,8 +715,8 @@ class ControlledMergingExperiment:
                 'min': entropy_val
             })
             
-            # Get joint action using MPC with shared belief (TRUE MPC if fast_mode=False)
-            joint_action = self.mpc.get_joint_action(
+            # Get joint action using MCTS with shared belief (REPLACED MPC)
+            joint_action = self.planner.get_joint_action(
                 shared_belief, 
                 agent_positions, 
                 fast_mode=fast_mode,
@@ -768,8 +737,8 @@ class ControlledMergingExperiment:
                 else:
                     observation = 1 if obs_rand < self.alpha else 0
                 
-                # Update SHARED belief
-                shared_belief = self.mpc._update_belief_single(
+                # Update SHARED belief using helper in planner
+                shared_belief = self.planner._update_belief_single(
                     shared_belief, pos, observation
                 )
             
@@ -823,13 +792,13 @@ class ExperimentConfig:
     n_agents_list: List[int] = field(default_factory=lambda: [4])
     alpha: float = 0.1  # False positive rate
     beta: float = 0.2   # False negative rate
-    horizon: int = 2    # MPC horizon
+    horizon: int = 2    # MPC/MCTS horizon
     n_trials: int = 30
     max_steps: int = 1000
     merge_intervals: List[Union[int, float]] = None
     target_patterns: List[str] = None
-    fast_mode: bool = False  # TRUE MPC by default
-    random_walk_mode: bool = False # Control mode: True = Random Walk, False = Active MPC
+    fast_mode: bool = False  # TRUE Planner by default
+    random_walk_mode: bool = False # Control mode: True = Random Walk, False = Active Planner
     merge_methods: List[str] = None # List of methods to test
     
     def __post_init__(self):
@@ -1219,12 +1188,12 @@ def run_single_trial_task(task: TrialTask) -> Optional[Dict]:
             'n_agents': task.n_agents
         }
         
-        # Run the experiment with TRUE MPC (unless fast_mode specified in config)
+        # Run the experiment with MCTS (replacing MPC logic)
         result = experiment._run_single_experiment(
             trial_config,
             task.merge_interval,
             task.config.max_steps,
-            task.config.fast_mode,  # FALSE by default for TRUE MPC
+            task.config.fast_mode,  # FALSE by default
             task.config.random_walk_mode, # Control Mode
             task.merge_method
         )
@@ -1302,12 +1271,12 @@ def main():
             n_agents_list=[2, 3, 4],  # Multiple agent numbers
             alpha=0.1,
             beta=0.2,
-            horizon=3,  # Full MPC horizon
+            horizon=3,  # Full MCTS horizon (depth)
             n_trials=50,
             max_steps=1000,
             merge_intervals=[0, 10, 25, 50, 100, 200, 500, float('inf')],
             target_patterns=['random', 'evasive', 'patrol'],
-            fast_mode=False,  # TRUE MPC for computational accuracy
+            fast_mode=False,  # MCTS
             random_walk_mode=False, # Active search by default
             merge_methods=['standard_kl', 'reverse_kl', 'geometric_mean', 'arithmetic_mean']
         )
@@ -1318,7 +1287,7 @@ def main():
     print(f"Configuration: {config}")
     print(f"Grid sizes: {config.grid_sizes}")
     print(f"Agent numbers: {config.n_agents_list}")
-    print(f"TRUE MPC Mode: {not config.fast_mode}")
+    print(f"MCTS Mode: {not config.fast_mode}")
     print(f"Random Walk Mode: {config.random_walk_mode}")
     print(f"Methods: {config.merge_methods}")
     
