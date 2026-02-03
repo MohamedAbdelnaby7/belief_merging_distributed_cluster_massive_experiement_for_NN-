@@ -115,11 +115,11 @@ class ReasonableResourceManager:
             },
             
             'large': {
-                'grid_sizes': [[25, 25], [30, 30], [40, 40], [45, 45], [50, 50], [100, 100]],  # Extended grid sizes
+                'grid_sizes': [[10, 10], [15, 15], [20, 20], [25, 25], [30, 30], [40, 40], [45, 45], [50, 50], [100, 100]],  # Extended grid sizes
                 'n_agents_list': [2, 3],  # All agent numbers
                 'n_trials': 10,
                 'horizon': 3,  # Full MPC horizon
-                'max_steps': 1000,
+                'max_steps': 5000,
                 'merge_intervals': [0, 5, 10, 25, 50, 100, 200, 500, float('inf')],
                 'target_patterns': ['random', 'evasive', 'patrol'],
                 'fast_mode': False,  # TRUE MPC

@@ -6,6 +6,7 @@ Includes all original classes + distributed execution framework
 No external dependencies on your original file
 FIXED: Consistent seed generation for proper checkpointing
 NOW USING MCTS INSTEAD OF MPC FOR PLANNING
+UPDATED: Using Gurobi for Optimization instead of Scipy
 """
 
 import numpy as np
@@ -23,7 +24,7 @@ import sys
 from pathlib import Path
 import logging
 from scipy.stats import entropy, pearsonr, spearmanr
-from scipy.optimize import minimize
+# from scipy.optimize import minimize # Removed Scipy minimize
 import pandas as pd
 import seaborn as sns
 from typing import Dict, List, Tuple, Any, Union, Optional
@@ -40,7 +41,14 @@ from dataclasses import dataclass, asdict, field
 import argparse
 import socket
 import subprocess
-import math # Added for MCTS
+import math
+
+# Gurobi Import
+try:
+    import gurobipy as gp
+    from gurobipy import GRB
+except ImportError:
+    print("WARNING: gurobipy not found. Optimization methods will fail.")
 
 warnings.filterwarnings('ignore')
 
@@ -121,86 +129,111 @@ class UnifiedBeliefMergingFramework:
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs))
         
-        def kl_divergence(p, q):
-            p = np.clip(p, 1e-10, 1)
-            q = np.clip(q, 1e-10, 1)
-            return np.sum(p * np.log(p / q))
-        
-        def objective(merged_flat):
-            merged = merged_flat.reshape(beliefs[0].shape)
-            merged = merged / np.sum(merged)
+        n_states = beliefs[0].shape[0]
+        # Calculate linear coefficients C[x] = Sum_i w_i P_i(x)
+        beliefs_flat = [b.flatten() for b in beliefs]
+        C = np.zeros(n_states)
+        for i, b in enumerate(beliefs_flat):
+            C += agent_weights[i] * b
             
-            total_divergence = 0
-            for i, belief in enumerate(beliefs):
-                total_divergence += agent_weights[i] * kl_divergence(belief, merged)
-            
-            return total_divergence
-        
-        # Initial guess: weighted average
-        initial_guess = self.merge_beliefs_average(beliefs, agent_weights)
-        
-        # Constraints and bounds
-        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-        bounds = [(0, 1) for _ in range(len(initial_guess.flatten()))]
-        
-        result = minimize(
-            objective,
-            initial_guess.flatten(),
-            method='SLSQP',
-            bounds=bounds,
-            constraints=constraints,
-            options={'maxiter': 1000, 'ftol': 1e-10}
-        )
-        
-        if result.success:
-            merged = result.x.reshape(initial_guess.shape)
-            return merged / np.sum(merged)
-        else:
-            return initial_guess
+        try:
+            with gp.Env(empty=True) as env:
+                env.setParam('OutputFlag', 0)
+                env.start()
+                with gp.Model("forward_kl", env=env) as model:
+                    
+                    # Variables Q(x)
+                    q = model.addVars(n_states, lb=1e-9, ub=1.0, name="q")
+                    
+                    # Variables for log(Q(x))
+                    log_q = model.addVars(n_states, lb=-float('inf'), name="log_q")
+                    
+                    # Constraint: Sum Q(x) = 1
+                    model.addConstr(q.sum() == 1, "sum_prob")
+                    
+                    # General Constraints: log_q[i] = ln(q[i])
+                    for i in range(n_states):
+                        model.addGenConstrLog(q[i], log_q[i])
+                        
+                    # Objective: Maximize Sum C[i] * log_q[i]
+                    obj_expr = gp.LinExpr()
+                    for i in range(n_states):
+                        if C[i] > 1e-12: # Skip negligible terms
+                            obj_expr += C[i] * log_q[i]
+                    
+                    model.setObjective(obj_expr, GRB.MAXIMIZE)
+                    model.optimize()
+                    
+                    if model.status == GRB.OPTIMAL:
+                        merged = np.array([q[i].X for i in range(n_states)])
+                        # Normalize to be safe, though constraint handles it
+                        return merged.reshape(beliefs[0].shape) / np.sum(merged)
+                    else:
+                        # Fallback to analytical arithmetic mean if solver fails
+                        return self.merge_beliefs_average(beliefs, agent_weights)
+                        
+        except Exception as e:
+            # Fallback if Gurobi fails or not installed
+            print(f"Gurobi Optimization Failed: {e}. Falling back to Arithmetic Mean.")
+            return self.merge_beliefs_average(beliefs, agent_weights)
 
     def merge_beliefs_reverse_kl(self, beliefs, agent_weights=None):
-        """Reverse KL divergence merging (Optimization based)"""
+        """Reverse KL divergence merging (Optimization based) using Gurobi"""
         # Objective: min Sum w_i KL(Q || P_i)
+        # Equivalent to: min Sum_x Q(x) log Q(x) - Sum_x Q(x) * (Sum_i w_i log P_i(x))
+        # The term x log x (negative entropy) is convex.
         
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs))
-        
-        def reverse_kl_divergence(q, p):
-            q = np.clip(q, 1e-10, 1)
-            p = np.clip(p, 1e-10, 1)
-            return np.sum(q * np.log(q / p))
-        
-        def objective(merged_flat):
-            merged = merged_flat.reshape(beliefs[0].shape)
-            merged = merged / np.sum(merged)
             
-            total_divergence = 0
-            for i, belief in enumerate(beliefs):
-                total_divergence += agent_weights[i] * reverse_kl_divergence(merged, belief)
+        n_states = beliefs[0].shape[0]
+        beliefs_flat = [b.flatten() for b in beliefs]
+        
+        # Calculate D[x] = Sum_i w_i log P_i(x)
+        D = np.zeros(n_states)
+        for i, b in enumerate(beliefs_flat):
+            b_safe = np.clip(b, 1e-12, 1.0)
+            D += agent_weights[i] * np.log(b_safe)
             
-            return total_divergence
-        
-        # Initial guess: geometric mean (since it's the analytical solution)
-        initial_guess = self.merge_beliefs_geometric(beliefs, agent_weights)
-        
-        # Constraints and bounds
-        constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-        bounds = [(0, 1) for _ in range(len(initial_guess.flatten()))]
-        
-        result = minimize(
-            objective,
-            initial_guess.flatten(),
-            method='SLSQP',
-            bounds=bounds,
-            constraints=constraints,
-            options={'maxiter': 1000, 'ftol': 1e-10}
-        )
-        
-        if result.success:
-            merged = result.x.reshape(initial_guess.shape)
-            return merged / np.sum(merged)
-        else:
-            return initial_guess
+        try:
+            with gp.Env(empty=True) as env:
+                env.setParam('OutputFlag', 0)
+                env.start()
+                with gp.Model("reverse_kl", env=env) as model:
+                    
+                    # Variable Q(x)
+                    q = model.addVars(n_states, lb=1e-9, ub=1.0, name="q")
+                    
+                    # Constraint: Sum Q(x) = 1
+                    model.addConstr(q.sum() == 1, "sum_prob")
+                    
+                    # Objective: Sum (q_i log q_i - D_i q_i)
+                    # We approximate q log q using Piecewise Linear Function
+                    
+                    # Define sampling points for x log x
+                    x_pts = np.linspace(1e-9, 1.0, 100)
+                    y_pts = x_pts * np.log(x_pts)
+                    
+                    for i in range(n_states):
+                        # The total objective contribution for q[i] is:
+                        # (q[i] * log(q[i])) - (D[i] * q[i])
+                        # We combine the PWL part and the linear part into one PWL definition for efficiency
+                        y_pts_combined = y_pts - (D[i] * x_pts)
+                        model.setPWLObj(q[i], x_pts, y_pts_combined)
+                    
+                    model.modelSense = GRB.MINIMIZE
+                    model.optimize()
+                    
+                    if model.status == GRB.OPTIMAL:
+                        merged = np.array([q[i].X for i in range(n_states)])
+                        return merged.reshape(beliefs[0].shape) / np.sum(merged)
+                    else:
+                        # Fallback to analytical geometric mean
+                        return self.merge_beliefs_geometric(beliefs, agent_weights)
+                        
+        except Exception as e:
+            print(f"Gurobi Optimization Failed: {e}. Falling back to Geometric Mean.")
+            return self.merge_beliefs_geometric(beliefs, agent_weights)
     
     def jensen_shannon_divergence(self, p, q):
         """Calculate Jensen-Shannon divergence between two distributions"""
