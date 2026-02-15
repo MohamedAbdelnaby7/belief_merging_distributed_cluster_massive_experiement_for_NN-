@@ -600,7 +600,7 @@ class ControlledMergingExperiment:
                 'mean': np.mean(entropies),
                 'std': np.std(entropies),
                 'max': np.max(entropies),
-                'min': np.min(entropies)
+                'min': np.min(entropies) 
             })
             
             # Calculate divergence between agents
