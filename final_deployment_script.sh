@@ -103,24 +103,20 @@ success "Directory structure created"
 # Step 5: Generate reasonable configurations
 header "5/6 Generating reasonable configurations for shared cluster..."
 
+# This generates the actual JSON and .sh files with James's N=1 fix
 python3 reasonable_turing_allocation.py
 
 echo ""
-echo "RESOURCE ALLOCATION SUMMARY:"
+echo "RESOURCE ALLOCATION SUMMARY (SINGLE-NODE OPTIMIZED):"
 echo "================================"
 echo ""
 echo "🧪 TEST:      8 cores,  16GB,  2h  (immediate scheduling)"
 echo "📊 SMALL:    32 cores,  64GB, 12h  (schedule in hours)"  
-echo "🎯 STANDARD: 64 cores, 128GB, 24h  (schedule in ~1 day)"
-echo "🚀 LARGE:   128 cores, 256GB, 48h  (schedule in 1-2 days)"
+echo "🎯 STANDARD: 48 cores, 200GB, 24h  (schedule in ~1 day)"
+echo "🚀 LARGE:    46 cores, 350GB, 120h"
 echo ""
-echo "All configurations use TRUE MPC (no fast mode) for accuracy"
+echo "All configurations use 1-Node allocation to fix the idle CPU bug."
 echo ""
-echo "MULTI-GRID SUPPORT:"
-echo "================================"
-echo "Grid sizes: 10x10, 15x15, 20x20, 25x25, 30x30, 40x40"
-echo "Agent numbers: 2, 3, 4 agents"
-echo "Results organized by grid_size → agent_count → pattern → strategy"
 
 # Step 6: Select experiment size
 header "6/6 Experiment configuration selection..."
@@ -131,7 +127,7 @@ echo ""
 echo "1) 🧪 TEST     - Quick verification (2 grids, 2-3 agents, 5 trials)"
 echo "2) 📊 SMALL    - Initial results (2 grids, all agents, 20 trials)"
 echo "3) 🎯 STANDARD - Full study (3 grids, all agents, 50 trials)"
-echo "4) 🚀 LARGE    - Maximum power (6 grids, all agents, 100 trials)"
+echo "4) 🚀 LARGE    - Maximum power (9+ grids, all agents, 10 trials)"
 echo ""
 read -p "Choose configuration (1-4) [default: 2]: " config_choice
 
@@ -144,24 +140,27 @@ case $config_choice in
         TRIALS=5
         GRIDS="2 grid sizes"
         AGENTS="2-3 agents"
+        PARTITION="short"
         ;;
     3) 
         EXPERIMENT_TYPE="standard"
-        CORES=64
-        MEMORY="128GB"
+        CORES=48
+        MEMORY="200GB"
         TIME="24h"
         TRIALS=50
         GRIDS="3 grid sizes"
         AGENTS="2-4 agents"
+        PARTITION="long"
         ;;
     4) 
         EXPERIMENT_TYPE="large"
-        CORES=128
-        MEMORY="256GB"
-        TIME="48h"
-        TRIALS=100
-        GRIDS="6 grid sizes"
-        AGENTS="2-4 agents"
+        CORES=46  # Changed from 128 to 46 to fit on one node
+        MEMORY="350GB"
+        TIME="120h"
+        TRIALS=10
+        GRIDS="9+ grid sizes"
+        AGENTS="2-3 agents"
+        PARTITION="long" 
         ;;
     *) 
         EXPERIMENT_TYPE="small"
@@ -171,11 +170,13 @@ case $config_choice in
         TRIALS=20
         GRIDS="2 grid sizes"
         AGENTS="2-4 agents"
+        PARTITION="short"
         ;;
 esac
 
-info "Selected: $EXPERIMENT_TYPE experiment ($CORES cores, $MEMORY, $TIME)"
+info "Selected: $EXPERIMENT_TYPE experiment ($CORES cores on 1 Node, $MEMORY, $TIME)"
 info "Configuration: $GRIDS, $AGENTS, $TRIALS trials each"
+info "Partition: $PARTITION"
 
 # Create monitoring script with multi-grid support
 cat > scripts/monitor.sh << 'EOF'
@@ -289,57 +290,6 @@ echo "   tail -f logs/experiment_*.out   # Live experiment logs"
 echo ""
 echo "4️⃣  CHECK RESULTS:"
 echo "   ls results/analysis/            # Final analysis files"
-echo ""
-echo "=================================================================="
-echo "EXPERIMENT DETAILS:"
-echo "=================================================================="
-echo ""
-echo "📋 Configuration: $EXPERIMENT_TYPE"
-echo "⚙️  Resource Request: $CORES cores, $MEMORY RAM, $TIME time limit"
-echo "📊 Grid Sizes: $GRIDS"
-echo "👥 Agent Numbers: $AGENTS"
-echo "🔬 Trials: $TRIALS per configuration"
-echo "🧮 TRUE MPC: Full computational accuracy (no fast mode)"
-echo ""
-echo "⏱️  Expected Timeline:"
-echo "   • Queue wait: Minutes to hours (depending on cluster load)"
-echo "   • Execution: $TIME with TRUE MPC complexity"
-echo "   • Analysis: Automatic upon completion"
-echo ""
-echo "📁 Key Files:"
-echo "   • Main experiment: complete_distributed_experiment.py"
-echo "   • Configuration: configs/${EXPERIMENT_TYPE}_config.json"
-echo "   • SLURM script: scripts/run_${EXPERIMENT_TYPE}.sh"
-echo "   • Checkpoints: checkpoints/grid*_agents*_*.pkl"
-echo "   • Results: results/analysis/"
-echo ""
-echo "=================================================================="
-echo "MULTI-GRID COMPUTATIONAL COMPLEXITY:"
-echo "=================================================================="
-echo ""
-echo "🧮 Scaling with Grid Size and Agent Number:"
-echo "   • 10x10 grid, 2 agents = 100 states × 25 joint actions"
-echo "   • 20x20 grid, 3 agents = 400 states × 125 joint actions"
-echo "   • 30x30 grid, 4 agents = 900 states × 625 joint actions"
-echo "   • 40x40 grid, 4 agents = 1600 states × 625 joint actions"
-echo ""
-echo "📊 Total Computational Load:"
-
-# Calculate total tasks based on selection
-case $EXPERIMENT_TYPE in
-    test) TOTAL_CONFIGS=12 ;;
-    small) TOTAL_CONFIGS=48 ;;
-    standard) TOTAL_CONFIGS=189 ;;
-    large) TOTAL_CONFIGS=486 ;;
-esac
-
-# Account for multiple methods (x4: standard, reverse, geometric, arithmetic)
-echo "   • Methods per config: 4"
-echo "   • Configurations: ~$TOTAL_CONFIGS unique setups"
-echo "   • Tasks per config: $TRIALS trials"
-echo "   • Total experiments: ~$((TOTAL_CONFIGS * 4 * TRIALS))"
-echo ""
-echo "This is why we need $CORES cores for reasonable runtime!"
 echo ""
 echo "=================================================================="
 echo "Ready to start? Run: sbatch scripts/run_${EXPERIMENT_TYPE}.sh"

@@ -7,6 +7,7 @@ No external dependencies on your original file
 FIXED: Consistent seed generation for proper checkpointing
 NOW USING MCTS INSTEAD OF MPC FOR PLANNING
 UPDATED: Using Gurobi for Optimization instead of Scipy
+FIXED: Gurobi Threading & Memory Management to prevent OOM
 """
 
 import numpy as np
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 import logging
 from scipy.stats import entropy, pearsonr, spearmanr
-# from scipy.optimize import minimize # Removed Scipy minimize
+# from scipy.optimize import minimize # Scipy minimize replaced by Gurobi
 import pandas as pd
 import seaborn as sns
 from typing import Dict, List, Tuple, Any, Union, Optional
@@ -42,13 +43,14 @@ import argparse
 import socket
 import subprocess
 import math
+import gc  # Added for memory management
 
 # Gurobi Import
 try:
     import gurobipy as gp
     from gurobipy import GRB
 except ImportError:
-    print("WARNING: gurobipy not found. Optimization methods will fail.")
+    print("WARNING: gurobipy not found. Optimization methods will fall back to analytical solutions.")
 
 warnings.filterwarnings('ignore')
 
@@ -92,7 +94,7 @@ class UnifiedBeliefMergingFramework:
         self.n_agents = n_agents
         
     def merge_beliefs_average(self, beliefs, agent_weights=None):
-        """Simple averaging of beliefs (Arithmetic Mean)"""
+        """Simple averaging of beliefs (Arithmetic Mean) - Analytical"""
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs)) / len(beliefs)
         
@@ -103,7 +105,7 @@ class UnifiedBeliefMergingFramework:
         return merged / np.sum(merged)
 
     def merge_beliefs_geometric(self, beliefs, agent_weights=None):
-        """Geometric Mean (Logarithmic Opinion Pool) - The 'Veto' Method"""
+        """Geometric Mean (Logarithmic Opinion Pool) - Analytical"""
         # This corresponds to Reverse KL Minimization (Analytical Solution)
         if len(beliefs) == 1: return beliefs[0].copy()
         
@@ -125,6 +127,7 @@ class UnifiedBeliefMergingFramework:
         # Note: Mathematically, min Sum w_i KL(P_i || Q) results in the Arithmetic Mean.
         # This optimization method is slower but effectively finds the same result as merge_beliefs_average.
         # We keep it for consistency with previous experiments.
+        # Memory-optimized Forward KL using Gurobi
         
         if agent_weights is None:
             agent_weights = np.ones(len(beliefs))
@@ -137,8 +140,11 @@ class UnifiedBeliefMergingFramework:
             C += agent_weights[i] * b
             
         try:
+            # Gurobi Environment context manager to suppress output and handle licensing
             with gp.Env(empty=True) as env:
                 env.setParam('OutputFlag', 0)
+                env.setParam('Threads', 1) # CRITICAL: Prevent thread explosion
+                env.setParam('MemLimit', 4) # Limit this specific optimization to 4GB
                 env.start()
                 with gp.Model("forward_kl", env=env) as model:
                     
@@ -198,6 +204,8 @@ class UnifiedBeliefMergingFramework:
         try:
             with gp.Env(empty=True) as env:
                 env.setParam('OutputFlag', 0)
+                env.setParam('Threads', 1) # CRITICAL: Prevent thread explosion
+                env.setParam('MemLimit', 4)
                 env.start()
                 with gp.Model("reverse_kl", env=env) as model:
                     
@@ -208,16 +216,14 @@ class UnifiedBeliefMergingFramework:
                     model.addConstr(q.sum() == 1, "sum_prob")
                     
                     # Objective: Sum (q_i log q_i - D_i q_i)
-                    # We approximate q log q using Piecewise Linear Function
-                    
-                    # Define sampling points for x log x
+                    # We use Piecewise Linear Approximation for x log x
+                    # Define sampling points
                     x_pts = np.linspace(1e-9, 1.0, 100)
                     y_pts = x_pts * np.log(x_pts)
                     
                     for i in range(n_states):
-                        # The total objective contribution for q[i] is:
-                        # (q[i] * log(q[i])) - (D[i] * q[i])
-                        # We combine the PWL part and the linear part into one PWL definition for efficiency
+                        # Combine convex entropy term and linear term
+                        # cost = (q log q) - (D[i] * q)
                         y_pts_combined = y_pts - (D[i] * x_pts)
                         model.setPWLObj(q[i], x_pts, y_pts_combined)
                     
@@ -367,6 +373,11 @@ class MultiAgentMCTS:
         self.beta = beta
         self.n_states = grid_size[0] * grid_size[1]
         self.simulations = simulations # Number of MCTS iterations per step
+        # 8-Direction offsets (row_change, col_change) - No (0,0) allowed
+        self.move_offsets = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),   # Cardinal
+            (-1, -1), (-1, 1), (1, -1), (1, 1)  # Diagonal
+        ]
 
     def get_joint_action(self, beliefs: Union[np.ndarray, List[np.ndarray]], 
                         agent_positions: List[int], 
@@ -432,16 +443,24 @@ class MultiAgentMCTS:
         return best_child.action
 
     def _get_legal_joint_actions(self, current_positions):
-        """Generate a subset of legal joint actions"""
-        # Full combinatorial is too big. Sample 10 random valid joint moves.
+        """Generates a diverse subset of 8-direction joint moves"""
+        agent_legal_moves = []
+        for pos in current_positions:
+            r, c = divmod(pos, self.grid_size[1])
+            moves = []
+            for dr, dc in self.move_offsets:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < self.grid_size[0] and 0 <= nc < self.grid_size[1]:
+                    moves.append(nr * self.grid_size[1] + nc)
+            agent_legal_moves.append(moves)
+        
+        # To avoid 8^n explosion, we sample 30-100 joint actions 
+        # but ensure they are diverse (using random selection from Cartesian product)
         joint_actions = []
-        for _ in range(10): 
-            action = []
-            for pos in current_positions:
-                neighbors = self._get_neighbors(pos)
-                action.append(np.random.choice(neighbors))
-            joint_actions.append(tuple(action))
-        return list(set(joint_actions)) # Unique only
+        for _ in range(100): 
+            action = tuple(np.random.choice(m) for m in agent_legal_moves)
+            joint_actions.append(action)
+        return list(set(joint_actions))
 
     def _simulate_step(self, state, joint_action, shared_mode):
         """Apply action and simulated observation to get new state"""
@@ -461,18 +480,8 @@ class MultiAgentMCTS:
         new_beliefs = []
         for i, b in enumerate(current_beliefs):
             # Pick a target loc based on belief
-            target_hypothesis = np.random.choice(len(b), p=b/np.sum(b))
-            
-            # Simulate obs
-            obs = 0
-            if new_positions[i if not shared_mode else 0] == target_hypothesis: # Simplify index logic
-                 # shared mode has 1 belief but N agents. 
-                 # i is 0 in shared mode loop (len 1).
-                 pass
-            
-            # Actually, let's just do update.
-            # If shared mode, we have 1 belief, N agents in joint_action.
-            # If indep mode, N beliefs, N agents.
+            # If shared mode, we use the single belief for simulation logic
+            # If independent, we use the specific agent's belief
             
             if shared_mode:
                 # One shared belief updated by ALL agents
@@ -1247,6 +1256,9 @@ def run_single_trial_task(task: TrialTask) -> Optional[Dict]:
         
         # Atomic save to checkpoint
         save_result_atomic(result, checkpoint_path)
+        
+        # FORCE GARBAGE COLLECTION
+        gc.collect()
         
         return result
         
